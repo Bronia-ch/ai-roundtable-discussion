@@ -333,4 +333,103 @@
 
 ---
 
+---
+
+## 第 3 条 · Phase 1 工程骨架与契约实现（executing-plans）
+
+**阶段**：Phase 1 SDD 工程契约与骨架（Task 1.1–1.7）
+**技能**：superpowers:executing-plans（Claude Code v2.1.250、模型 deepseek-v4-pro[1M]）
+
+**意图**：执行已批准实施计划的 Phase 1，落地后端/前端骨架、SQLite DDL、5 组幂等种子、Pydantic 模型、API/SSE 契约与 FakeLLM，全程 TDD、三个提交组。
+
+**挑战与约束**：严格 RED→GREEN；仅用 CG1/CG2/CG3 三个提交；不装 UI UX Pro Max、不调真实 LLM、不写真实密钥。
+
+### 原始 Prompt（原样保存）
+
+```text
+现在开始执行已批准实施计划的 Phase 1：SDD 工程契约与骨架。
+
+请严格遵循以下要求：
+
+1. 明确调用并遵循 `superpowers:executing-plans`。
+2. 完整读取并以这两个文件为权威来源：
+   - `docs/superpowers/specs/2026-08-28-ai-roundtable-mvp-design.md`
+   - `docs/superpowers/plans/2026-08-28-ai-roundtable-mvp-implementation.md`
+3. 本轮只执行 Phase 1 的 Task 1.1–1.7，不得提前执行 Phase 2，不得安装 UI UX Pro Max。
+4. 在当前仓库 `C:\AI圆桌讨论APP` 中执行，不创建新 worktree，不切换分支，不推送远端。
+5. 开始前确认：
+   - 当前 HEAD 为 `d4bc3446d2bb4cd8021fcb3b07992463b4de5d1e`；
+   - 工作区干净；
+   - 当前 Claude Code 会话模型显示为 `deepseek-v4-pro[1M]`；
+   - Superpowers 的 executing-plans、test-driven-development、systematic-debugging、verification-before-completion 可调用。
+6. 将本条用户原始 Prompt 原样追加到 `docs/prompt-log.md`，作为第 3 条“Phase 1 工程骨架与契约实现”记录；不得记录隐藏 thought、密钥或内部推理。
+7. Phase 1 中涉及可测试逻辑的任务必须调用并遵循 `superpowers:test-driven-development`：
+   - 先写测试；
+   - 运行并确认测试因目标功能不存在而失败；
+   - 再写最小实现；
+   - 重新运行确认通过；
+   - 禁止先写实现再补测试。
+8. 按计划仅使用三个逻辑提交组：
+   - CG1：Task 1.1–1.2，后端和前端工程骨架；
+   - CG2：Task 1.3–1.4，SQLite DDL、初始化及 5 组幂等种子；
+   - CG3：Task 1.5–1.7，Pydantic 模型、API/SSE 契约、FakeLLM/ScriptedLLM。
+   同一提交组内不要提前提交，组级测试通过后只创建一次提交。
+9. 可以创建虚拟环境并安装 Phase 1 所需依赖，但必须：
+   - 使用已被 `.gitignore` 忽略的 `.venv`；
+   - 不创建或提交真实 `.env`；
+   - 不写入真实 API Key；
+   - 不发起真实 LLM API 请求；
+   - 前端依赖只写入正常的 `package.json` 和 lockfile；
+   - 不安装 Phase 2 或后续阶段才需要的额外工具。
+10. 每个任务按计划执行精确测试命令。如计划中的代码片段或命令存在语法、路径或版本错误：
+    - 不要机械照抄；
+    - 先调用 `superpowers:systematic-debugging` 找出原因；
+    - 做满足规格的最小修正；
+    - 在最终报告中记录“计划预期、实际问题、修正方式”。
+11. SQLite Schema 必须落实规格中的核心约束，包括：
+    - sessions、participants、turns、utterances、insights、insight_evidence、events、command_receipts、discussion_reports；
+    - foreign_keys；
+    - 会话内 sequence；
+    - 必要 UNIQUE、复合 FK 和 NOT NULL；
+    - finalizing、generation_epoch、last_stable_state、error_code、retry_operation；
+    - 不允许跨会话关联。
+12. 种子任务必须产生 5 组幂等示例数据：
+    - 标记 `is_sample`；
+    - 不冒充真实历史记录；
+    - 重复运行后数量不增加。
+13. FakeLLMProvider 和 ScriptedLLMProvider 不得访问网络，不得读取真实密钥。
+14. 每个提交前运行对应组级测试；提交后确认提交内容和工作区状态。
+15. Phase 1 全部任务完成后，调用 `superpowers:verification-before-completion`，执行停止点核验：
+    - `python -m pytest backend/tests -v` 全绿；
+    - `npm --prefix frontend run test` 全绿；
+    - `npm --prefix frontend run build` 成功；
+    - FastAPI `/healthz` 实际返回 HTTP 200；
+    - SQLite 9 张核心表存在；
+    - 种子数据重复执行后仍精确为 5 组；
+    - FakeLLM 测试证明不访问网络；
+    - Git 中无 `.env`、数据库运行文件、依赖目录或密钥；
+    - 本阶段实际提交数精确为 3；
+    - 工作区干净。
+16. 遇到测试失败或环境问题时使用 `superpowers:systematic-debugging`，不要跳过测试、删除断言或伪造通过结果。
+17. 完成 Phase 1 后停止，不得自动进入 Phase 2，不得安装 UI UX Pro Max。
+
+最终报告必须包含：
+
+1. 完成的 Task 1.1–1.7；
+2. 创建/修改的文件；
+3. 安装的依赖；
+4. RED→GREEN 的实际测试证据；
+5. SQLite 表和种子核验结果；
+6. 前后端测试与构建结果；
+7. `/healthz` 验证结果；
+8. 三个提交的完整 hash、信息及文件统计；
+9. 对计划中任何错误所做的修正；
+10. `git status --porcelain`；
+11. 明确说明未执行 Phase 2、未调用真实 LLM。
+
+完成后停止，等待我审查。
+```
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）
