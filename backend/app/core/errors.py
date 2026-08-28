@@ -22,8 +22,16 @@ class FatalPersistenceError(Exception):
     """会话级不可恢复的持久化/一致性错误——仅此类进入 failed。"""
 
 
+class RateLimitError(Exception):
+    """429 / 限流——可恢复重试。"""
+
+
+class UpstreamError(Exception):
+    """5xx 上游服务错误——可恢复重试。"""
+
+
 def classify_error(exc: Exception) -> ErrorClass:
-    if isinstance(exc, (TimeoutError, ConnectionError)):
+    if isinstance(exc, (TimeoutError, ConnectionError, RateLimitError, UpstreamError)):
         return ErrorClass.RECOVERABLE
     if isinstance(exc, AuthError):
         return ErrorClass.AUTH
