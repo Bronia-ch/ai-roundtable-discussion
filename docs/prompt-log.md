@@ -719,4 +719,181 @@ Phase 1 复审发现数据库最终 DDL 存在未被现有测试覆盖的外键�
 
 ---
 
+---
+
+## 第 6 条 · TDD 后端核心逻辑（Phase 3）
+
+**阶段**：Phase 3 TDD 后端核心（Task 3.1–3.14，P0）
+**技能**：superpowers:executing-plans + superpowers:test-driven-development
+
+**意图**：以逻辑提交组为批次，先写失败测试再实现，落地会话状态机、事务三写、调度器、turns/registry/命令幂等、Transcript/洞察、上限/降级/对账/多会话隔离。
+
+**实际挑战与纠偏**：（随组推进补充）
+
+### 原始 Prompt（原样保存）
+
+```text
+Phase 2 复审通过。现在执行实施计划 Phase 3：TDD 后端核心逻辑。
+
+请调用并遵循：
+
+- `superpowers:executing-plans`
+- `superpowers:test-driven-development`
+- 出现非预期失败时使用 `superpowers:systematic-debugging`
+- 完成前使用 `superpowers:verification-before-completion`
+
+权威来源：
+
+- `docs/superpowers/specs/2026-08-28-ai-roundtable-mvp-design.md`
+- `docs/superpowers/plans/2026-08-28-ai-roundtable-mvp-implementation.md`
+- `backend/app/schema.sql`
+- `docs/architecture.md`
+
+执行边界：
+
+1. 本轮只执行 Phase 3 的 P0 Task 3.1–3.14。
+2. Task 3.15 为 P1，默认不执行；仅在全部 P0 完成且无需额外调试时执行。
+3. 不进入 Phase 4，不实现真实 LLM Provider、真实 SSE 传输或前端实时接入。
+4. 不调用真实外部 API。
+5. 当前仓库直接执行，不创建 worktree、不切换分支、不推送远端。
+6. 开始前确认：
+   - HEAD 为 `ca4805eec3ce4ee9cb0c9d46c3c48cdc00db4727`；
+   - 工作区干净；
+   - 后端 21 项测试通过；
+   - 前端 17 项测试、构建、Edge 6 项测试通过。
+
+## 提速后的 TDD 执行方式
+
+7. 以逻辑提交组为批次执行，不为每个微任务单独等待：
+   - 先为该组全部任务编写失败测试；
+   - 统一运行该组测试并保存每类预期 RED 证据；
+   - 实现该组最小代码；
+   - 统一运行组级 GREEN；
+   - 运行后端回归；
+   - 展示暂存清单并提交。
+8. RED 必须因目标功能缺失或行为错误而失败；测试夹具错误、导入路径错误、环境权限错误不算有效 RED，需先修复测试基础设施。
+9. 已获授权的 Pytest、Vitest、build、E2E 和只读搜索命令直接执行，不重复请求。
+10. 文件编辑和测试之间无需等待用户文字确认；仅在安装依赖、Git 提交、外部调用、破坏性操作或改变已确认设计时暂停。
+11. 不删除测试、不放宽断言、不用 sleep 掩盖并发问题。
+
+## CG7：Task 3.1–3.2
+
+12. 实现九态会话状态机和原子状态/事件事务：
+    - 严格迁移表；
+    - completed/failed 终态；
+    - 状态业务写入、`last_event_sequence` 递增、events 插入同一事务；
+    - 提交成功后才允许广播；
+    - 事件失败整体回滚；
+    - 两会话 sequence 各自从 1 开始；
+    - SQLite busy/locked 有限重试，但 LLM/网络调用不得位于事务内。
+13. 测试必须包含正常迁移、非法迁移、终态、事务回滚、事件序号和跨会话独立。
+14. GREEN 后创建一次 CG7 提交。
+
+## CG8：Task 3.3–3.4
+
+15. 实现纯函数、确定性的非固定轮流调度：
+    - 输入为已校验的意图、立场、历史和公平性信号；
+    - 模型不得直接指定最终发言者；
+    - 上一位默认不得连续发言；
+    - 仅明确点名追问允许例外；
+    - 防长期饥饿；
+    - 同输入和随机种子产生同结果；
+    - 无可用意图时规则降级；
+    - `willingness` 已钳制到 `[0,1]`。
+16. 测试覆盖规格中的调度不变量，不回退固定轮询。
+17. Task 3.15 的额外边界变体默认跳过并记录为 P1。
+18. GREEN 后创建一次 CG8 提交。
+
+## CG9：Task 3.5–3.7
+
+19. 实现：
+    - turns 与 generation_epoch；
+    - 中断后迟到响应拒绝；
+    - 原子 EngineRegistry，同一 session 最多一个运行 engine；
+    - start/resume/retry 的 session 级锁；
+    - command_receipts 持久化幂等；
+    - 重复 `(session_id, command_id)` 返回原状态，不重复执行任务。
+20. 必须有真实 asyncio 并发测试，证明并发 start/resume 不产生双 engine。
+21. GREEN 后创建一次 CG9 提交。
+
+## CG10：Task 3.8–3.10
+
+22. 实现 Transcript 与洞察核心：
+    - 发言非空、长度、speaker/turn 同会话校验；
+    - utterance 会话内 ordinal；
+    - 迟到 generation_epoch 不写入；
+    - insight_evidence 作为共识/分歧计数真值；
+    - support/oppose 按去重 participant 聚合；
+    - LLM 不得直接返回计数；
+    - 洞察状态 pending/processing/succeeded/retry_wait/permanently_failed；
+    - 同会话按 ordinal 顺序领取；
+    - 不同会话允许有限并行；
+    - 条件更新防重复领取；
+    - 洞察失败不阻塞下一轮发言。
+23. 测试覆盖重复 evidence、跨会话 evidence、顺序处理、防重复领取和永久失败后不再领取。
+24. GREEN 后创建一次 CG10 提交。
+
+## CG11：Task 3.11–3.14
+
+25. 实现并测试：
+    - 40 条软上限自动 paused；
+    - 每次继续增加 10；
+    - 100 条绝对上限只能结束；
+    - 失败分类与安全降级；
+    - 仅会话级不可恢复持久化/一致性错误进入 failed 且带 error_code；
+    - 启动对账幂等；
+    - preparing/speaking 恢复为 waiting/idle；
+    - generating turn 取消并递增 epoch；
+    - live 重启后变 paused，不自动调用 LLM；
+    - pending/processing 洞察恢复；
+    - 多会话查询、状态、Transcript、洞察和任务互相隔离；
+    - 一场暂停/失败不影响另一场。
+26. 多会话隔离属于 P0，不得跳过。
+27. 将本条原始 Prompt 原样追加到 `docs/prompt-log.md`，作为“TDD 后端核心逻辑”阶段记录，并附 1–2 句意图、挑战和纠偏；不得记录隐藏 thought。
+28. GREEN 后创建一次 CG11 提交，包含 Prompt 日志更新。
+
+## 每组提交规则
+
+29. Phase 3 最多创建 5 个 P0 提交：CG7–CG11。
+30. 每次 Git 提交仍使用单次授权，不申请长期 `git add`/`git commit` 权限。
+31. 提交前展示：
+    - 该组 RED 摘要；
+    - GREEN 测试数量；
+    - 完整后端回归结果；
+    - 暂存文件清单；
+    - 无数据库、`.env`、缓存或密钥。
+32. 若 Task 3.15 被执行，合并进 CG8，不增加提交数量。
+
+## Phase 3 最终核验
+
+33. 调用 `superpowers:verification-before-completion`，至少确认：
+    - 全部后端测试通过；
+    - Phase 1 的 21 项测试仍通过；
+    - 前端 17 项测试与构建仍通过；
+    - 必要时 Edge 6 项视觉回归仍通过；
+    - 状态机、事务、调度、并发 registry、命令幂等、Transcript、洞察、恢复、多会话隔离均有自动化测试；
+    - SQLite `PRAGMA foreign_key_check` 无异常；
+    - Git 未跟踪运行时数据库、`.env`、缓存或依赖目录；
+    - 工作区干净；
+    - Phase 3 P0 实际提交数为 5；
+    - 未执行 Phase 4；
+    - 未调用真实 LLM。
+
+最终报告必须列出：
+
+1. Task 3.1–3.15 的完成或跳过状态；
+2. 每组 RED→GREEN 证据；
+3. 核心设计实现摘要；
+4. 并发与多会话测试证据；
+5. 全部测试和构建结果；
+6. CG7–CG11 完整 commit hash、信息和统计；
+7. 计划或环境问题及修正；
+8. `git status --porcelain`；
+9. 明确说明未执行 Phase 4、未调用真实 LLM。
+
+完成后停止等待审查。
+```
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）
