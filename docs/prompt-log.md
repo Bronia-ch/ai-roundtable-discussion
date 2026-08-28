@@ -117,4 +117,220 @@
 
 ---
 
+---
+
+## 第 2 条 · 实施计划 / writing-plans（第 1B 阶段）
+
+**阶段**：writing-plans —— 生成可执行的分阶段实施计划。
+**技能**：superpowers:writing-plans（Claude Code v2.1.250、模型 deepseek-v4-pro[1M]，见文件顶部元数据）。
+**对应交付物**：`docs/superpowers/plans/2026-08-28-ai-roundtable-mvp-implementation.md`
+
+**意图**：把已确认的规格转成可执行、可验证、分阶段提交的实施计划，禁止直接写业务代码或安装依赖。
+
+**挑战与约束**：将 51 个任务映射到 A1–H8 验收编号，控制在 72 小时内并区分 P0/P1/P2；保证 TDD 先写失败测试、UI UX Pro Max 门禁先于前端实现、FakeLLM 隔离真实模型。
+
+### 原始 Prompt（原样保存）
+
+```text
+请明确调用并遵循 `superpowers:writing-plans` 技能，开始"AI 圆桌讨论 Web App MVP"的第 1B 阶段：生成可执行的分阶段实施计划。
+
+如果 writing-plans 技能未成功加载，请立即停止并报告，不得用普通流程代替。
+
+一、权威输入
+
+请完整读取并以以下文件为唯一规格来源：
+
+- `docs/superpowers/specs/2026-08-28-ai-roundtable-mvp-design.md`
+- `docs/prompt-log.md`
+- `.gitignore`
+
+同时检查当前 Git 状态和最近提交，确认：
+
+- 根提交为 `3363e44bbf1f5933f115d9b367285dd1c196f80f`
+- 当前没有业务代码和依赖
+- 工作区干净
+- 不读取或输出任何 API Key
+
+二、本阶段限制
+
+当前只创建实施计划和更新 Prompt 日志：
+
+- 不安装任何依赖；
+- 不安装 UI UX Pro Max；
+- 不初始化 FastAPI、React 或数据库工程；
+- 不生成业务代码、测试代码或配置密钥；
+- 不执行实施计划；
+- 不调用真实付费模型；
+- 不创建 Git Commit，等待我审查后再提交；
+- 不使用并行 subagents 或 worktree。
+
+三、计划文件
+
+创建：
+
+`docs/superpowers/plans/2026-08-28-ai-roundtable-mvp-implementation.md`
+
+计划必须使用 Superpowers writing-plans 的可执行任务格式，每项任务至少包含：
+
+1. 目标和对应规格验收编号；
+2. 准确的预期文件路径；
+3. 前置条件；
+4. 先写的失败测试；
+5. 运行该测试的具体命令和预期失败原因；
+6. 最小实现步骤；
+7. 再次运行测试的命令和预期通过结果；
+8. 本任务的人工检查点；
+9. 本任务的独立 Git Commit 信息；
+10. 失败时应调用的 `superpowers:systematic-debugging` 条件。
+
+四、阶段顺序
+
+计划必须严格按以下顺序组织，不能把整个项目压成一个任务：
+
+### Phase 1：SDD 工程契约与骨架
+
+- 后端、前端目录骨架；
+- Python/Node 依赖定义；
+- `.env.example`；
+- SQLite 最终 DDL、幂等初始化与 5 组种子数据；
+- ER 图；
+- Pydantic 模型；
+- API/SSE 事件契约；
+- FakeLLMProvider/ScriptedLLMProvider；
+- 基础启动和健康检查；
+- 不实现完整讨论功能。
+
+### Phase 2：DDD / UI UX Pro Max 设计门禁
+
+- 从官方来源以项目作用域安装并验证 UI UX Pro Max；
+- 保存安装及技能加载证据，但不得提交本地敏感配置；
+- 使用 UI UX Pro Max 为"AI 演播厅/新闻直播控制台"生成设计系统；
+- 持久化 `design-system/MASTER.md`；
+- 明确颜色、字体、间距、布局网格、组件状态、响应式断点、独立滚动区域、键盘焦点、reduced-motion 和反模式；
+- 先做静态页面、组件状态和 Mock 数据，不接真实 LLM；
+- 覆盖首页、阵容确认页、演播厅、finalizing 与 completed 结果态；
+- 普通桌面和超宽屏进行视觉验收。
+
+### Phase 3：TDD 后端核心
+
+必须显式调用 `superpowers:test-driven-development`，严格执行 RED → GREEN → REFACTOR：
+
+- 会话状态机；
+- 状态与事件同事务提交；
+- 发言调度纯函数；
+- 防连续发言、点名例外、防饥饿、确定性种子；
+- turns/generation_epoch；
+- EngineRegistry；
+- command_receipts 幂等；
+- Transcript；
+- insight_evidence 确定性聚合；
+- 洞察 Worker；
+- 软上限与绝对上限；
+- 错误分级和安全降级；
+- 服务启动对账；
+- 多会话隔离。
+
+### Phase 4：LLM 与实时集成
+
+- DeepSeek/OpenAI 兼容 Provider；
+- API Key 只由后端环境变量读取；
+- 阵容、批量意图、专家发言、主持人、洞察、最终报告六类调用；
+- timeout、有限重试、jitter、Schema 修复、并发信号量；
+- SSE 持久化事件日志；
+- 快照 + after_seq/Last-Event-ID；
+- 前端实时状态、Transcript、洞察和断线恢复；
+- 默认测试继续使用 FakeLLM，不调用真实模型；
+- 真实模型 smoke test 必须显式开启。
+
+### Phase 5：E2E 与系统修复
+
+必须覆盖：
+
+- 创建讨论 → 生成阵容 → re-roll → 确认 → 进入演播厅 → 开始 → 多轮发言 → 实时洞察 → 中断 → 恢复 → 结束 → finalizing → 结果；
+- 两场讨论并发且事件不串线；
+- SSE 断线重连；
+- 重复 command_id；
+- 浏览器刷新恢复；
+- 服务重启后 live → paused；
+- LLM/洞察/最终报告失败降级；
+- 软上限 40、继续 +10、绝对上限 100；
+- Edge 浏览器；
+- UI 独立滚动、普通桌面和超宽屏不重叠；
+- 发现问题时调用 `superpowers:systematic-debugging`；
+- 完成前调用 `superpowers:verification-before-completion`。
+
+### Phase 6：文档与提交包
+
+- README；
+- 系统架构、bounded contexts、ER、数据库、API/SSE、测试策略；
+- 已完成能力与后续改进；
+- `docs/ai-development-workflow.md`；
+- 至少 5 段核心 Prompt；
+- 2～3 个典型问题及解决路径；
+- Git 历史与敏感信息检查；
+- SQLite 初始化和种子数据验证；
+- zip、仓库链接和邮件提交清单；
+- 不实际发送邮件或推送远程仓库，除非用户后续明确授权。
+
+五、计划质量要求
+
+- 控制在 72 小时内，标明 P0、P1 和明确可放弃的 P2；
+- 前 64～68 小时完成 P0，保留最后 4～8 小时验收缓冲；
+- 每个任务应足够小，通常可在 15～60 分钟内完成；
+- 每个阶段设置停止点，必须验证通过才能进入下一阶段；
+- 每次 Commit 只包含一个逻辑主题；
+- 不允许先写实现再补测试；
+- 不把 UI UX Pro Max、Superpowers 或 DeepSeek 使用仅写在文档里，计划必须包含真实调用与证据保存步骤；
+- 明确哪些测试使用 FakeLLM，哪些 smoke test 才允许真实 API；
+- 所有命令适配 Windows PowerShell 和当前路径 `C:\AI圆桌讨论APP`；
+- 不使用 Bash 专属命令或 Unix 路径；
+- 不在命令中显示或回显密钥。
+
+六、更新 Prompt 日志
+
+在 `docs/prompt-log.md` 追加第 2 条：
+
+- 阶段：实施计划 / writing-plans；
+- 当前这条完整原始 Prompt，使用唯一的 `text` 代码块保存；
+- 1～2 句说明本轮意图、挑战与约束；
+- 记录实际使用的 Claude Code 版本、DeepSeek 模型和 Superpowers skill；
+- 不记录隐藏 Thought 或敏感配置。
+
+七、完成前验证
+
+创建计划并更新 Prompt 日志后，调用 `superpowers:verification-before-completion`，检查：
+
+- 只有计划文档和 Prompt 日志发生变化；
+- 没有业务代码、依赖或密钥；
+- 计划覆盖规格 A1～H8；
+- UI UX Pro Max 门禁在前端实现之前；
+- TDD 任务明确包含失败测试和通过测试；
+- 每个阶段都有验证命令与 Commit；
+- 工作区尚未提交。
+
+最后报告：
+
+1. 创建/修改的文件；
+2. 计划总阶段数和任务数；
+3. P0/P1/P2 分布；
+4. 预计时间；
+5. 验收编号覆盖情况；
+6. 验证结果；
+7. `git diff --stat`；
+8. 等待我审查，不要执行或提交计划。
+```
+
+---
+
+### 最终产出 / 统计信息（第 1B 阶段）
+
+- 阶段数：6
+- 任务数：51
+- P0 / P1 / P2：49 / 1 / 1
+- 逻辑提交组：20
+- 时间：计划内任务总计 42.75h（P0 41.75h + P1 0.5h + P2 0.5h，含 Phase 5=10.25h、Phase 6=6.00h）；风险及验收缓冲 10h；计划总占用 52.75h；距 72h 尚余 19.25h（超时保护）
+- 验收覆盖：A1–H8 每个硬性验收均有具体 P0 任务 + 验证方法
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）
