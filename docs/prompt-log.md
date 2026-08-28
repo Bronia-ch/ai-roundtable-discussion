@@ -436,4 +436,92 @@
 
 ---
 
+---
+
+## 第 4 条 · Phase 1 复审与数据库约束纠偏
+
+**阶段**：Phase 1 数据库约束修复
+**技能**：superpowers:systematic-debugging + superpowers:test-driven-development
+
+**意图**：修复 `utterances → turns` 外键引用非唯一列导致的 `foreign key mismatch`，并补全会话作用域外键约束。
+
+**实际挑战与纠偏**：现有 `test_db.py` 只查表存在与 `PRAGMA foreign_keys`，未做真实关联写入，漏检了 `turns.id` 无 UNIQUE 导致的外键问题；本轮先写跨会话/未知会话引用的失败测试（真实 RED 暴露 `foreign key mismatch - "utterances" referencing "turns"`），再补 `UNIQUE(session_id, id)` 与复合外键修复。
+
+### 原始 Prompt（原样保存）
+
+```text
+Phase 1 复审发现数据库最终 DDL 存在未被现有测试覆盖的外键问题。暂停进入 Phase 2，只进行一次 Phase 1 数据库约束修复。
+
+请明确调用并遵循：
+
+- `superpowers:systematic-debugging`
+- `superpowers:test-driven-development`
+- 完成前调用 `superpowers:verification-before-completion`
+
+问题证据：
+
+当前 `utterances` 使用：
+
+`FOREIGN KEY(turn_id) REFERENCES turns(id)`
+
+但 `turns.id` 当前不是 PRIMARY KEY，也没有 UNIQUE 约束。SQLite 可能允许创建表，但实际插入 utterance 时会产生 `foreign key mismatch`。现有 `test_db.py` 只检查表存在和 `PRAGMA foreign_keys=1`，没有真正插入关联数据，因此漏检。
+
+本轮要求：
+
+1. 先追加失败测试，不要先修改 Schema。至少覆盖：
+   - 合法 session、participant、turn、utterance 能成功写入；
+   - session A 的 utterance 不能引用 session B 的 turn；
+   - session A 的 utterance 不能引用 session B 的 speaker；
+   - turn 的 `selected_participant_id` 不能引用另一会话的 participant；
+   - events 不能引用不存在的 session；
+   - command_receipts 不能引用不存在的 session；
+   - 合法测试数据写入后 `PRAGMA foreign_key_check` 返回空结果。
+
+2. 运行新增测试并保存真实 RED 证据。预期应暴露 `foreign key mismatch` 或跨会话引用未被拒绝。
+
+3. 对 `backend/app/schema.sql` 做最小修复：
+   - `turns` 增加 `UNIQUE(session_id, id)`；
+   - `utterances` 的 turn 外键改为：
+     `FOREIGN KEY(session_id, turn_id) REFERENCES turns(session_id, id)`；
+   - `turns.selected_participant_id` 增加会话内复合外键：
+     `FOREIGN KEY(session_id, selected_participant_id) REFERENCES participants(session_id, id)`；
+   - `events.session_id` 增加 FK → `sessions(id)`；
+   - `command_receipts.session_id` 增加 FK → `sessions(id)`；
+   - 不删除现有复合约束，不放宽测试；
+   - 如 SQLite 对复合外键提出父键唯一性要求，按数据库规范补足对应 `UNIQUE(session_id, id)`，不要关闭 foreign_keys。
+
+4. 修复后运行新增测试确认 GREEN，再运行：
+   - `.venv/Scripts/python -m pytest backend/tests -v`
+   - `npm --prefix frontend run test`
+   - `npm --prefix frontend run build`
+
+5. 将本条原始 Prompt 原样追加到 `docs/prompt-log.md`，标记为"Phase 1 复审与数据库约束纠偏"，附 1–2 句说明现有测试为何漏检以及如何通过真实关联写入测试修复。不得记录隐藏 thought。
+
+6. 只提交本次相关文件：
+   - `backend/app/schema.sql`
+   - `backend/tests/test_db.py`，或新增的精确数据库约束测试文件
+   - `docs/prompt-log.md`
+
+7. 创建一个透明的修复提交：
+
+`fix(db): enforce session-scoped foreign keys`
+
+不要 amend、rebase 或重写已有 CG1–CG3 历史。本修复提交作为 Phase 1 审查发现后的独立纠偏证据，因此 Phase 1 最终实际提交数应更新为 4。
+
+8. 完成前核验：
+   - 新增测试真实经历 RED→GREEN；
+   - 全部后端测试通过；
+   - 前端测试和构建仍通过；
+   - `PRAGMA foreign_key_check` 无结果；
+   - 跨会话 turn/speaker/selected participant 引用均被数据库拒绝；
+   - 未生成运行时数据库或真实 `.env`；
+   - 工作区干净；
+   - 未进入 Phase 2；
+   - 未调用真实 LLM。
+
+最终报告列出 RED 失败、Schema 修正、GREEN 结果、完整测试结果、新提交 hash 和 `git status --porcelain`，然后停止等待审查。
+```
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）

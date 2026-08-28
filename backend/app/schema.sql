@@ -49,8 +49,10 @@ CREATE TABLE IF NOT EXISTS turns (
   started_at TEXT,
   completed_at TEXT,
   cancelled_at TEXT,
+  UNIQUE(session_id, id),
   UNIQUE(session_id, sequence),
-  FOREIGN KEY(session_id) REFERENCES sessions(id)
+  FOREIGN KEY(session_id) REFERENCES sessions(id),
+  FOREIGN KEY(session_id, selected_participant_id) REFERENCES participants(session_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS utterances (
@@ -71,7 +73,7 @@ CREATE TABLE IF NOT EXISTS utterances (
   UNIQUE(session_id, id),
   UNIQUE(session_id, ordinal),
   FOREIGN KEY(session_id, speaker_id) REFERENCES participants(session_id, id),
-  FOREIGN KEY(turn_id) REFERENCES turns(id)
+  FOREIGN KEY(session_id, turn_id) REFERENCES turns(session_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS insights (
@@ -111,7 +113,8 @@ CREATE TABLE IF NOT EXISTS events (
   schema_version INTEGER NOT NULL DEFAULT 1,
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(session_id, sequence)
+  UNIQUE(session_id, sequence),
+  FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
 
 CREATE TABLE IF NOT EXISTS command_receipts (
@@ -122,7 +125,8 @@ CREATE TABLE IF NOT EXISTS command_receipts (
   status TEXT NOT NULL DEFAULT 'accepted',
   result TEXT,
   error TEXT,
-  PRIMARY KEY(session_id, command_id)
+  PRIMARY KEY(session_id, command_id),
+  FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
 
 CREATE TABLE IF NOT EXISTS discussion_reports (
