@@ -432,4 +432,8 @@
 
 ---
 
+**实际挑战与纠偏**：Windows 上 pytest 的 tmp_path 遇系统临时目录 `PermissionError [WinError 5]`，通过 pytest.ini 增加 `addopts = --basetemp=.pytest_tmp` 并将 `.pytest_tmp/` 加入 .gitignore 解决。其余最小修正：config 用 pydantic v2 的 `model_config`（替代 v1 `class Config`）；`.env.example` 用 `LLM_SQLITE_PATH` 匹配 `env_prefix=LLM_`；willingness 用 `field_validator` 钳制（规格要求"钳制"而非 `Field(ge,le)` 拒绝）；前端 Phase 1 仅装基础依赖（`@playwright/test`/`@testing-library`/`jsdom` 推迟到 Phase 2）；build 用 `tsc --noEmit`（单 tsconfig）；test_contract 修正 `r.methods`（集合）与字符串比较。
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）
