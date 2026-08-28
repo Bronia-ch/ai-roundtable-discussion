@@ -524,4 +524,199 @@ Phase 1 复审发现数据库最终 DDL 存在未被现有测试覆盖的外键�
 
 ---
 
+---
+
+## 第 5 条 · DDD / UI UX Pro Max 与静态页面设计（Phase 2）
+
+**阶段**：Phase 2 DDD / UI UX Pro Max 门禁与静态界面设计
+**技能**：superpowers:executing-plans + superpowers:test-driven-development + ui-ux-pro-max:design-system
+
+**意图**：安装并验证 UI UX Pro Max，生成演播厅设计系统，实现静态页面与组件状态，并做 Edge 视觉验收。
+
+**实际挑战与纠偏**：`/plugin` 为用户级斜杠命令，代理改用等价的 `claude plugin` CLI 完成安装（`marketplace add` + `install --scope project -y`）；安装后技能未立即可调用，需用户执行 `/reload-plugins` 后 `ui-ux-pro-max:design-system` 才成功加载。
+
+### 原始 Prompt（原样保存）
+
+```text
+现在开始执行已批准实施计划的 Phase 2：DDD / UI UX Pro Max 门禁与静态界面设计。
+
+请严格遵循以下要求：
+
+1. 明确调用并遵循 `superpowers:executing-plans`。
+2. 完整读取并以以下文件为权威来源：
+   - `docs/superpowers/specs/2026-08-28-ai-roundtable-mvp-design.md`
+   - `docs/superpowers/plans/2026-08-28-ai-roundtable-mvp-implementation.md`
+   - `docs/architecture.md`
+3. 本轮只执行 Phase 2 的 Task 2.1–2.4。Task 2.5 为 P2：只有 2.1–2.4 全部通过且没有阻塞时才可执行，否则明确记录为待选增强。
+4. 不得进入 Phase 3，不得实现状态机、调度器、DiscussionEngine、真实 SSE 或真实 LLM 调用。
+5. 开始前确认：
+   - 当前 HEAD 为 `450a45d214f7d4a431ed4fa368fad53bc54b47d9`；
+   - 工作区干净；
+   - Phase 1 后端 21 项测试通过；
+   - 当前模型显示为 `deepseek-v4-pro[1M]`；
+   - Superpowers 的 executing-plans、test-driven-development、systematic-debugging、verification-before-completion 可调用。
+6. 将本条用户原始 Prompt 原样追加到 `docs/prompt-log.md`，作为“DDD / UI UX Pro Max 与静态页面设计”阶段记录。不得记录隐藏 thought、密钥或内部推理。
+
+## Task 2.1：安装并验证 UI UX Pro Max
+
+7. 必须使用官方来源：
+
+`https://github.com/nextlevelbuilder/ui-ux-pro-max-skill`
+
+在 Claude Code 中依次执行：
+
+`/plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill`
+
+`/plugin install ui-ux-pro-max@ui-ux-pro-max-skill`
+
+安装作用域选择：
+
+`Install for all collaborators on this repository`
+
+然后执行：
+
+`/reload-plugins`
+
+8. 重载后必须实际核验 UI UX Pro Max 技能可以调用。如果没有成功加载：
+   - 立即调用 `superpowers:systematic-debugging`；
+   - 不得用普通设计流程冒充；
+   - 无法解决时停止并报告，不得继续 Task 2.2。
+9. 创建 `docs/ui-ux-pro-max-install-evidence.md`，记录：
+   - 官方来源；
+   - 实际安装命令；
+   - 安装作用域；
+   - 插件/技能名称与版本（若可读取）；
+   - `/reload-plugins` 结果；
+   - 成功调用技能的可公开证据；
+   - 日期与当前模型。
+   不得写入 API Key、Token 或本地敏感配置。
+10. 检查插件安装造成的项目文件变化：
+    - 如果生成项目级 `.claude/settings.json`，仅在它只含插件启用信息且不含密钥时才可提交；
+    - `.claude/settings.local.json` 必须继续忽略，不得提交；
+    - 提交前显示 `.claude/` 中所有待提交文件内容和敏感信息扫描结果。
+
+## Task 2.2：设计系统先行
+
+11. 必须明确调用 UI UX Pro Max 技能，为本项目生成“中文 AI 圆桌演播厅 / 直播控制台”设计系统。
+12. 创建设计系统文件 `design-system/MASTER.md`，至少明确：
+    - 产品视觉定位与设计原则；
+    - 中文字体栈；
+    - 色彩 token、语义色和对比度；
+    - 间距、圆角、阴影、边框；
+    - 普通桌面与超宽屏网格；
+    - 首页、阵容确认、演播厅、结果页的布局；
+    - 主持人与专家席位；
+    - waiting / preparing / speaking / idle 状态；
+    - 9 种讨论状态；
+    - Transcript、洞察侧栏和席位区域的独立滚动；
+    - 键盘焦点；
+    - 空状态、错误态、加载态和降级态；
+    - `prefers-reduced-motion`；
+    - 状态不得只靠颜色；
+    - 禁止全页滚动、内容重叠和横向溢出；
+    - 明确反模式。
+13. 不要生成真实人物头像图片；使用颜色、首字母或 emoji 标识，符合 MVP 范围。
+14. Task 2.1–2.2 完成并核验后统一创建 CG4 提交，不要分别提交。
+
+## Task 2.3：静态页面与组件状态
+
+15. 先调用并遵循 `superpowers:test-driven-development`。
+16. 安装本阶段所需且仅限本阶段的前端测试依赖，例如：
+    - `@testing-library/react`
+    - `@testing-library/jest-dom`
+    - `jsdom`
+    - `@playwright/test`
+    使用已有 Microsoft Edge，不下载 Chromium。
+17. 先写失败测试并保存 RED 证据，再实现：
+    - 首页讨论列表和新建入口；
+    - 阵容确认页；
+    - 演播厅；
+    - 结果页；
+    - DiscussionCard；
+    - PanelCard；
+    - ParticipantSeat；
+    - Transcript；
+    - InsightPanel。
+18. 当前只使用类型安全的 Mock 数据，不接真实后端业务，不访问真实 LLM。
+19. 静态界面必须覆盖：
+    - 中文 UI；
+    - 示例讨论明确标记；
+    - 9 态卡片路由；
+    - 主持人 idle/preparing/speaking；
+    - 专家 waiting/preparing/speaking；
+    - 当前关注点；
+    - Transcript 仅显示实际发言；
+    - 共识、分歧、焦点、未解决问题；
+    - 结束结果和 JSON 展示；
+    - 状态文本/图标与颜色共同表达；
+    - 各区域独立滚动；
+    - 无全页横向滚动。
+20. Task 2.3 测试通过后创建一次 CG5 提交。
+
+## Task 2.4：Edge 视觉与布局验收
+
+21. 配置 Playwright 使用已安装的 Microsoft Edge：
+
+`channel: "msedge"`
+
+不得下载 Chromium。
+22. 先写失败测试并保存 RED 证据，至少验证：
+    - 1280×900 普通桌面；
+    - 1920×1080 或更宽屏幕；
+    - 页面无横向溢出；
+    - 关键区域不重叠、不截断；
+    - 页面整体不依赖全页滚动；
+    - Transcript、洞察区等各自可滚动；
+    - 键盘焦点可见；
+    - `prefers-reduced-motion: reduce` 时禁用非必要动画；
+    - 状态不是只靠颜色表达。
+23. 如果测试失败，调用 `superpowers:systematic-debugging`，禁止通过删除断言、放宽视口或隐藏内容来使测试通过。
+24. Task 2.5 仅在所有 P0 验证完成后执行；若执行，只允许做微动效、悬停态、空状态等小幅润色，不得扩大功能范围。
+25. Task 2.4 与可选 2.5 完成后统一创建 CG6 提交，并把本阶段 Prompt 日志更新纳入该提交。
+
+## 提交与验证
+
+26. 本阶段最多三个逻辑提交：
+    - CG4：UI UX Pro Max 安装证据 + 项目安全插件配置 + `design-system/MASTER.md`
+    - CG5：静态页面、组件、样式及组件测试
+    - CG6：Playwright Edge 视觉验收、可选视觉润色、Prompt 日志更新
+27. 每个提交前展示：
+    - 测试结果；
+    - 暂存文件清单；
+    - 是否包含依赖目录、构建产物、截图报告或敏感配置。
+28. 完成后调用 `superpowers:verification-before-completion`，核验：
+    - UI UX Pro Max 确实安装且可调用；
+    - 设计系统无占位符；
+    - `npm --prefix frontend run test` 全绿；
+    - `npm --prefix frontend run build` 成功；
+    - Playwright 使用 Edge 且视觉测试全绿；
+    - 1280 和 1920 布局无横向溢出或重叠；
+    - reduced-motion 验证通过；
+    - 后端 `python -m pytest backend/tests -v` 仍为 21 项全绿；
+    - Git 未跟踪 `node_modules`、`dist`、Playwright 报告、真实 `.env` 或密钥；
+    - 工作区干净；
+    - 未执行 Phase 3；
+    - 未调用真实 LLM。
+29. 完成 Phase 2 后停止，不得自动进入 Phase 3。
+
+最终报告必须包含：
+
+1. 完成的 Task 2.1–2.5及是否执行 P2；
+2. UI UX Pro Max 安装与加载证据；
+3. 设计系统核心决策；
+4. 创建/修改文件；
+5. 安装的依赖；
+6. RED→GREEN 测试证据；
+7. Vitest、构建、Playwright Edge 和后端回归结果；
+8. 1280/1920/reduced-motion 验收结果；
+9. CG4–CG6 的完整 commit hash、信息和统计；
+10. 对计划错误或环境问题的修正；
+11. `git status --porcelain`；
+12. 明确说明未执行 Phase 3、未调用真实 LLM。
+
+完成后停止，等待我审查。
+```
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）

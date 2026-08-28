@@ -60,6 +60,7 @@ h1, h2, h3, h4 {
   background: var(--color-surface-raised);
   color: var(--color-text);
   cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 .btn-primary { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
 .btn-danger { background: var(--color-danger); border-color: var(--color-danger); color: #fff; }
