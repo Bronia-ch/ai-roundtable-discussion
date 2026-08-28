@@ -1,0 +1,166 @@
+:root {
+  --pr-blue-950: #0B0E14;
+  --pr-blue-900: #12161F;
+  --pr-blue-800: #1A202B;
+  --pr-blue-700: #242B3A;
+  --pr-gray-50: #F5F7FA;
+  --pr-gray-300: #C6CDD8;
+  --pr-gray-500: #8A93A5;
+  --pr-gray-600: #5B6472;
+  --pr-blue-500: #3B82F6;
+  --pr-green-500: #10B981;
+  --pr-amber-500: #F59E0B;
+  --pr-red-500: #EF4444;
+  --pr-violet-500: #8B5CF6;
+
+  --color-bg: var(--pr-blue-950);
+  --color-surface: var(--pr-blue-900);
+  --color-surface-raised: var(--pr-blue-800);
+  --color-border: var(--pr-blue-700);
+  --color-text: var(--pr-gray-50);
+  --color-text-secondary: var(--pr-gray-300);
+  --color-text-muted: var(--pr-gray-500);
+  --color-primary: var(--pr-blue-500);
+  --color-success: var(--pr-green-500);
+  --color-warning: var(--pr-amber-500);
+  --color-danger: var(--pr-red-500);
+
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --content-max: 1680px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  overflow-x: hidden;
+}
+
+.page {
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding: 24px;
+}
+
+h1, h2, h3, h4 {
+  margin: 0 0 12px;
+}
+
+/* 按钮 */
+.btn {
+  padding: 8px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.btn-primary { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.btn-danger { background: var(--color-danger); border-color: var(--color-danger); color: #fff; }
+.btn:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 讨论卡片 */
+.discussion-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+.discussion-card {
+  display: block;
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--color-text);
+}
+.card-meta { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text-muted); }
+.badge { padding: 2px 8px; border-radius: 999px; background: var(--color-surface-raised); color: var(--color-text-secondary); }
+.sample-tag { padding: 2px 8px; border-radius: 4px; background: var(--color-primary); color: #fff; }
+
+/* 席位 */
+.seats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  overflow: auto;
+}
+.participant-seat {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+.avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.seat-name { display: flex; align-items: center; gap: 8px; }
+.role-tag { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: var(--color-surface-raised); color: var(--color-text-secondary); }
+.seat-title, .seat-stance { font-size: 13px; color: var(--color-text-secondary); }
+.state-label { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 13px; }
+.state-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-muted); }
+[data-state="speaking"] .state-dot { background: var(--pr-green-500); }
+[data-state="preparing"] .state-dot { background: var(--pr-amber-500); }
+[data-state="idle"] .state-dot { background: var(--pr-blue-500); }
+
+/* 演播厅主体：独立滚动区域 */
+.studio { display: flex; flex-direction: column; height: 100vh; }
+.studio-body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+.transcript, .insight-panel {
+  overflow: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 16px;
+}
+.utterance { margin-bottom: 12px; }
+.utterance-speaker { font-size: 13px; color: var(--color-primary); }
+.utterance-text { margin: 4px 0 0; }
+.insight-section { margin-bottom: 16px; }
+.focus { margin-bottom: 16px; }
+.empty { color: var(--color-text-muted); }
+.controls { display: flex; gap: 12px; padding-top: 16px; }
+
+/* 阵容确认 */
+.panel-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin: 16px 0; }
+.panel-card { padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; }
+.setup-form { display: flex; gap: 16px; margin: 16px 0; }
+.setup-form label { display: flex; flex-direction: column; gap: 4px; }
+.actions { display: flex; gap: 12px; }
+
+/* 结果页 */
+.result-section { margin-bottom: 20px; }
+.json { font-family: var(--font-mono); background: var(--color-surface); padding: 16px; border-radius: 8px; overflow: auto; }
+
+/* reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
