@@ -896,4 +896,21 @@ Phase 2 复审通过。现在执行实施计划 Phase 3：TDD 后端核心逻辑
 
 ---
 
+---
+
+## 第 7 条 · Phase 3 复审纠偏（4 项不变量补全）
+
+**阶段**：Phase 3 复审纠偏
+**技能**：superpowers:test-driven-development + superpowers:systematic-debugging
+
+**审查发现与修复**：
+1. 数据库错误分级：`sqlite3.OperationalError` 的 `database is locked`/`database is busy` → recoverable；磁盘满/只读/损坏 → fatal（RED 2 failed → GREEN）。
+2. 调度器立场多样性：`_diversity()` 原固定返回 0.0，改为"近期立场单一 + 异质立场加分 1.0"（确定性、无 LLM、同 seed 同结果）。
+3. InsightWorker 严格 ordinal：`claim_next` 原跳过 processing/未到期 retry_wait，改为"最早未完成项阻塞后续"；并修正 `test_second_claim_returns_next` 以匹配新语义（处理完 u1 才能领 u2）。
+4. EngineRegistry 跨会话并发：补 `test_slow_factory_a_does_not_block_b`（A 慢 factory 不阻塞 B；同会话单 engine 已有测试）。SSE 会话隔离标注为"待 Phase 4 CG13 闭环"。
+
+**结果**：后端 77 passed，前端 17 passed + build 成功。
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）

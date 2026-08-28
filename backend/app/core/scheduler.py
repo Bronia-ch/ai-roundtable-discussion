@@ -20,8 +20,14 @@ def _fairness(gap: int) -> float:
     return min(gap, 10) / 10.0
 
 
-def _diversity(_candidate: str, _stances: dict[str, str], _history: dict[str, Any]) -> float:
-    # MVP：立场多样性加分留待后续（当前无"最近发言立场"信号）
+def _diversity(candidate: str, stances: dict[str, str], history: dict[str, Any]) -> float:
+    """近期立场单一时，异质立场获得多样性加分（确定性、无 LLM）。"""
+    recent = history.get("recent_stances", [])
+    if not recent:
+        return 0.0
+    cand_stance = stances.get(candidate, "")
+    if len(set(recent)) == 1 and cand_stance != recent[0]:
+        return 1.0
     return 0.0
 
 

@@ -46,9 +46,11 @@ async def test_second_claim_returns_next(conn):
     await _setup(conn)
     w = InsightWorker()
     first = await w.claim_next(conn, "s1")
-    second = await w.claim_next(conn, "s1")
     assert first == "u1"
-    assert second == "u2"
+    # 严格 ordinal：u1 仍在 processing，不能越过领取 u2
+    assert await w.claim_next(conn, "s1") is None
+    await w.mark_succeeded(conn, first)
+    assert await w.claim_next(conn, "s1") == "u2"
 
 
 @pytest.mark.asyncio
@@ -64,3 +66,24 @@ async def test_permanently_failed_not_reclaimed(conn):
     assert row[0] == "permanently_failed"
     # 不再领取 u1，应领取下一条 u2
     assert await w.claim_next(conn, "s1") == "u2"
+
+
+@pytest.mark.asyncio
+async def test_strict_ordinal_blocks_on_processing(conn):
+    await _setup(conn)
+    await conn.execute("UPDATE utterances SET insight_status='processing' WHERE id='u1'")
+    await conn.commit()
+    w = InsightWorker()
+    assert await w.claim_next(conn, "s1") is None
+
+
+@pytest.mark.asyncio
+async def test_strict_ordinal_blocks_on_not_due_retry(conn):
+    await _setup(conn)
+    await conn.execute(
+        "UPDATE utterances SET insight_status='retry_wait', "
+        "insight_next_retry_at=datetime('now', '+100 seconds') WHERE id='u1'"
+    )
+    await conn.commit()
+    w = InsightWorker()
+    assert await w.claim_next(conn, "s1") is None

@@ -13,18 +13,26 @@ class InsightWorker:
         self.semaphore = asyncio.Semaphore(concurrency)
 
     async def claim_next(self, conn: aiosqlite.Connection, session_id: str) -> str | None:
+        """严格 ordinal：最早未完成项阻塞后续；processing 或未到期 retry_wait 不可越过。"""
         row = await (
             await conn.execute(
-                "SELECT id FROM utterances WHERE session_id=? "
-                "AND insight_status IN ('pending','retry_wait') "
-                "AND (insight_next_retry_at IS NULL OR insight_next_retry_at <= datetime('now')) "
+                "SELECT id, insight_status, insight_next_retry_at FROM utterances "
+                "WHERE session_id=? AND insight_status IN ('pending','processing','retry_wait') "
                 "ORDER BY ordinal LIMIT 1",
                 (session_id,),
             )
         ).fetchone()
         if row is None:
             return None
-        uid = row[0]
+        uid, status, next_retry_at = row
+        if status == "processing":
+            return None
+        if status == "retry_wait":
+            due = (
+                await (await conn.execute("SELECT datetime('now') >= ?", (next_retry_at,))).fetchone()
+            )[0] if next_retry_at else 1
+            if not due:
+                return None
         cur = await conn.execute(
             "UPDATE utterances SET insight_status='processing' "
             "WHERE id=? AND insight_status IN ('pending','retry_wait')",

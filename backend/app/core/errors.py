@@ -29,7 +29,12 @@ def classify_error(exc: Exception) -> ErrorClass:
         return ErrorClass.AUTH
     if isinstance(exc, SchemaError):
         return ErrorClass.SCHEMA
-    if isinstance(exc, (FatalPersistenceError, sqlite3.OperationalError, sqlite3.DatabaseError)):
+    if isinstance(exc, sqlite3.OperationalError):
+        msg = str(exc).lower()
+        if "locked" in msg or "busy" in msg:
+            return ErrorClass.RECOVERABLE
+        return ErrorClass.FATAL
+    if isinstance(exc, (FatalPersistenceError, sqlite3.DatabaseError)):
         return ErrorClass.FATAL
     return ErrorClass.FATAL
 

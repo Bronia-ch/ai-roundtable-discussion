@@ -88,3 +88,36 @@ def test_host_interjection_does_not_clear_history():
         },
     )
     assert out == "b"
+
+
+def test_diversity_rewards_different_stance():
+    out = _mk(
+        ["a", "b"],
+        {"a": 0.5, "b": 0.5},
+        {"a": "answer", "b": "answer"},
+        {"a": "X", "b": "Y"},
+        {
+            "last": None,
+            "counts": {"a": 0, "b": 0},
+            "gaps": {"a": 0, "b": 0},
+            "recent_stances": ["X", "X", "X"],
+        },
+        seed=1,
+    )
+    assert out == "b"
+
+
+def test_diversity_same_stance_deterministic():
+    args = (
+        ["a", "b"],
+        {"a": 0.5, "b": 0.5},
+        {"a": "answer", "b": "answer"},
+        {"a": "X", "b": "X"},
+        {
+            "last": None,
+            "counts": {"a": 0, "b": 0},
+            "gaps": {"a": 0, "b": 0},
+            "recent_stances": ["X", "X", "X"],
+        },
+    )
+    assert _mk(*args, seed=7) == _mk(*args, seed=7)
