@@ -23,18 +23,25 @@ def _sse_format(envelope: dict) -> str:
 
 
 async def sse_stream(request, event_store, session_id: str, after_seq: int, heartbeat_interval: float = 15.0):
-    """先补发 after_seq 之后的事件，再订阅后续事件；心跳保活；断线不停止讨论。"""
-    for ev in await event_store.replay(session_id, after_seq):
-        yield _sse_format(ev)
+    """先订阅再补发 after_seq 之后的事件：replay→subscribe 间隙的提交经队列送达不丢失；
+    已补发事件按 last_sent_sequence 跳过，避免竞态重复；心跳保活；断线不停止讨论。"""
     q = event_store.subscribe(session_id)
     try:
+        replayed = await event_store.replay(session_id, after_seq)
+        last_sent_sequence = replayed[-1]["sequence"] if replayed else after_seq
+        for ev in replayed:
+            yield _sse_format(ev)
         while True:
             if await request.is_disconnected():
                 break
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=heartbeat_interval)
-                yield _sse_format(ev)
             except asyncio.TimeoutError:
                 yield ": heartbeat\n\n"
+                continue
+            if ev["sequence"] <= last_sent_sequence:
+                continue
+            last_sent_sequence = ev["sequence"]
+            yield _sse_format(ev)
     finally:
         event_store.unsubscribe(session_id, q)

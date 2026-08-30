@@ -8,6 +8,7 @@ ENDPOINTS = [
     ("POST", "/sessions/{id}/discussion/resume"),
     ("POST", "/sessions/{id}/discussion/end"),
     ("POST", "/sessions/{id}/retry"),
+    ("GET", "/sessions/{id}"),
     ("GET", "/sessions/{id}/events"),
 ]
 

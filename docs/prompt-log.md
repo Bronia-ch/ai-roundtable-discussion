@@ -913,4 +913,116 @@ Phase 2 复审通过。现在执行实施计划 Phase 3：TDD 后端核心逻辑
 
 ---
 
+---
+
+## 第 8 条 · LLM 与实时集成（Phase 4）
+
+**阶段**：Phase 4 LLM 与实时集成（Task 4.1–4.6，CG12/CG13/CG14）
+**技能**：superpowers:executing-plans + superpowers:test-driven-development
+
+**意图**：实现 OpenAI 兼容 Provider 与可靠性、六类 LLM 调用与 DiscussionEngine、SSE 事件日志/快照/会话隔离、前端实时渲染与去重、默认可跳过的真实 smoke。
+
+**实际挑战与纠偏**：（随组推进补充）
+
+### 原始 Prompt（原样保存）
+
+```text
+Phase 3 审查通过。现在开始执行实施计划 Phase 4 的 P0 Task 4.1–4.6，完成后停止，不得自动进入 Phase 5。
+
+请明确调用并遵循：
+
+- `superpowers:executing-plans`
+- `superpowers:test-driven-development`
+- 遇到异常时调用 `superpowers:systematic-debugging`
+- 完成前调用 `superpowers:verification-before-completion`
+
+执行边界：
+
+1. 严格按 CG12 → CG13 → CG14 分组推进，每组先 RED、再最小实现、再 GREEN、完整回归后只提交一次。
+2. 可批量执行同组只读检查和测试以减少确认次数，但不得跳过真实 RED 证据，不得削弱测试迎合实现。
+3. `git add` / `git commit` 每组只执行一次；不得 amend、rebase 或重写历史。
+4. 不得把 API Key、鉴权头、完整模型响应、原始异常栈或隐藏推理写入代码、日志、测试结果、Prompt 日志或 Git。
+5. 后端运行时只从 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 等环境变量读取配置；不得读取或复制 Claude Code 自身的 `ANTHROPIC_AUTH_TOKEN`。
+6. 所有真实网络调用必须发生在数据库事务之外。
+7. FakeLLM/ScriptedLLM 必须仍可离线跑通完整讨论，普通测试默认不得访问外网。
+
+重点验收：
+
+- CG12：OpenAI 兼容 Provider、timeout、全局与会话并发限制、429/5xx 有限指数退避+jitter、401/402 不重试、Schema 最多修复一次；六类 LLM 调用与 DiscussionEngine 的 start/pause/resume/end/finalizing 流程。
+- CG13：事件持久化与 SSE 广播职责清晰，提交成功后才广播；按 session 隔离；`after_seq` 与 `Last-Event-ID` 并存时取较大值；heartbeat；快照→订阅间隙可补发；断线不停止讨论。补上 Phase 3 留待本阶段闭环的“SSE 只收到当前 session 事件”测试。
+- CG14：前端先取快照再订阅；按 sequence 和实体 ID 去重；Transcript 不重复；断线补发不丢事件；真实 DeepSeek smoke 测试默认 SKIPPED。
+
+真实 DeepSeek 调用门禁：
+
+- 先完成 Task 4.1–4.5、创建默认跳过的 smoke 测试并通过全部离线回归。
+- 在第一次真实外部请求前必须停止，向我报告：拟使用的 endpoint、`LLM_MODEL` 名称、请求次数、预计成本，以及环境变量是否齐全（只报告存在/缺失，绝不显示值）。
+- 未经我明确批准，不得执行真实 smoke。
+- 获批后只发起一次最小请求，并仅记录脱敏的 status、model、token、latency、retry_count、error_code；必须证明实际返回目标为 DeepSeek V4 Pro，而非只凭配置推断。
+
+每组提交：
+
+- CG12：`feat: LLM provider reliability and engine loop`
+- CG13：`feat(sse): event log and snapshot`
+- CG14：`feat(frontend): sse rendering and opt-in smoke test`
+
+Phase 4 最终核验必须包括：
+
+- 全部后端测试；
+- 前端 Vitest 与 build；
+- FakeLLM 完整讨论流程；
+- SSE 会话隔离、重连补发及去重测试；
+- 真实 smoke 的脱敏结果（获批后）；
+- CG12–CG14 完整 commit hash；
+- 密钥与运行时文件扫描；
+- `git status --porcelain` 为空；
+- 更新 `docs/prompt-log.md`，记录原始 Phase 4 Prompt、RED→GREEN、关键纠偏与脱敏 smoke 结果。
+
+完成后停止并报告，不得进入 Phase 5。
+```
+
+---
+
 （后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）
+
+---
+
+## 第 9 条 · Phase 4 CG14：前端快照→SSE→断线恢复 + 默认可跳过 smoke（离线部分完成）
+
+**阶段**：Phase 4 CG14（Task 4.5 前端实时接入离线完成 + Task 4.6 默认跳过 smoke；停在真实 DeepSeek 调用门禁前）
+**技能**：superpowers:executing-plans + superpowers:test-driven-development（异常时 systematic-debugging；完成前 verification-before-completion）
+
+**意图**：前端实现"快照初始化 → EventSource 订阅 → 断线恢复"；applyEvent 按 session/sequence/实体 ID 三重幂等去重；服务端正确处理 `after_seq` 与浏览器 `Last-Event-ID`；FakeLLM 离线端到端；创建默认 SKIPPED 的真实 smoke 测试；更新 Prompt 日志。未经明确批准不发起真实 DeepSeek 请求、不提交 CG14、不进入 Phase 5。
+
+### 原始 Prompt（原样保存）
+
+```text
+继续 Phase 4 CG14，但本轮必须停在真实 DeepSeek 调用门禁前。明确加载并遵循 superpowers:executing-plans、test-driven-development、systematic-debugging（遇到问题时）、verification-before-completion（完成前）。执行 Task 4.5，并准备 Task 4.6 的默认跳过测试：
+1. 前端实现 snapshot → SSE 订阅 → 断线恢复；
+2. applyEvent 按 session、sequence 和实体 ID 幂等去重；
+3. utterance.completed 不得重复追加 Transcript；
+4. 重连只补发大于 last_sequence 的事件；
+5. 验证 FastAPI 的 snapshot 与 SSE 路由确实注册、可访问，不得只实现未挂载的函数；
+6. 前端 EventSource 使用 after_seq 完成首次续订；浏览器自动重连的 Last-Event-ID 由服务端正确处理；
+7. 用 FakeLLM/ScriptedLLM 完成离线端到端验证，不得访问真实网络；
+8. 创建 backend/tests/test_smoke_real.py，默认必须 SKIPPED；
+9. 更新 docs/prompt-log.md，保留现有未提交内容。
+完成离线实现后运行：CGCG14 指定测试；全部后端测试；前端 Vitest；前端 build；FakeLLM 完整讨论流程。然后停止并报告：拟调用的 endpoint；LLM_MODEL 名称；请求次数与预计成本；LLM_API_KEY 等变量仅报告"存在/缺失"，绝不输出值；默认 smoke 是否正确 SKIPPED；工作区文件清单。
+未经我明确批准，不得发起真实 DeepSeek 请求，不得提交 CG14，不得进入 Phase 5。
+```
+
+### 实际挑战与纠偏（本轮已落地）
+
+- **SSE 流式路由测试挂起**：httpx 0.27 ASGITransport 与 starlette 0.38.6 TestClient 都会把 ASGI app 内联运行到完成，与无限 SSE 流不兼容 → 改用真实 uvicorn 127.0.0.1 随机端口 fixture（`live_server`，仅本机回环，启动/超时/关闭/端口回收全兜底）；非流式测试继续用 ASGITransport。
+- **事件信封嵌套**：SSE 帧 `data:` 行是完整 envelope，payload 嵌套在 `envelope["data"]`，断言用 `frames[0]["data"]["data"]["utterance_id"]`。
+- **smoke 门禁收紧**：`skipif` 从"存在性判断"改为"值判断"——`SMOKE_REAL_LLM` 未设置、`0`、`false` 等一律 SKIPPED，仅 `1/true/yes` 启用，杜绝 `=0` 误触发真实请求。
+- **前端 EventSource 语义**：自定义 `event:` 类型必须走 `addEventListener(type, ...)`，`onmessage` 不触发；断线恢复闭环 = 快照 `last_sequence` → `after_seq` 续订 → 服务端只重放更大序号 → `applyEvent` 三重幂等（session 隔离、sequence ≤ lastSequence 原样返回、utterance_id 去重且去重时仍推进 lastSequence）。
+
+### RED→GREEN 证据（CG14 离线部分）
+
+- 前端 `tests/sse.test.ts`：先写 12 用例（快照初始化、after_seq 精确 URL、session 隔离 `toBe` 原引用、sequence 幂等、实体 ID 去重、重连只补发更大 sequence、insight 整体替换、postCommand 等），RED = `Failed to resolve import "../src/store/applyEvent"`（模块不存在）→ GREEN 12/12 passed。
+- 后端 `test_routes.py` 8/8：snapshot 200/404、SSE 重放、`after_seq`+`Last-Event-ID` 取较大值、快照→SSE 断线恢复循环端到端。
+- `test_smoke_real.py`：`SMOKE_REAL_LLM=0` 验证 SKIPPED（1 skipped in 0.71s）。
+
+### 当前状态
+
+CG14 离线部分完成，**未提交**、未发起真实 DeepSeek 请求、未进入 Phase 5；完整离线验证矩阵与停止报告待下一轮执行。
