@@ -12,6 +12,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   retry_operation TEXT,
   last_event_sequence INTEGER NOT NULL DEFAULT 0,
   is_sample INTEGER NOT NULL DEFAULT 0,
+  utterance_cap INTEGER NOT NULL DEFAULT 40,
+  degraded_components TEXT,
+  used_rule_scheduler_count INTEGER NOT NULL DEFAULT 0,
+  failed_turn_count INTEGER NOT NULL DEFAULT 0,
+  permanently_failed_insight_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

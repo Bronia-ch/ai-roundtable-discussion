@@ -337,8 +337,9 @@ async def test_pause_resume_end_routes_signal_engine(conn):
 
     门控 provider 提供确定性同步（与 test_engine 同契约）：每步放行前 wait_entered
     确认引擎已进入对应 gate——无 sleep、无时序碰巧。帧顺序断言同时覆盖每个命令
-    的 state_changed 先于其后的引擎 utterance。收尾：end 路由确定性收尾引擎任务；
-    finally 兜底 registry.stop，绝不留后台任务。"""
+    的 state_changed 先于其后的引擎 utterance。resume 为手动软暂停（error_code
+    NULL）：不得增加 utterance_cap（仅软上限恢复 +10，CG-D）。收尾：end 路由
+    确定性收尾引擎任务；finally 兜底 registry.stop，绝不留后台任务。"""
     assert hasattr(EngineRegistry, "get_task"), "契约：EngineRegistry.get_task(session_id)"
     assert hasattr(EngineRegistry, "stop"), "契约：EngineRegistry.stop(session_id)"
     await _seed_ready(conn, "s1")
@@ -405,6 +406,10 @@ async def test_pause_resume_end_routes_signal_engine(conn):
         assert await _status() == "live"
         f5 = await asyncio.wait_for(q.get(), timeout=5.0)
         assert f5["event"] == "session.state_changed" and f5["data"]["state"] == "live"
+        cap = (await (await conn.execute(
+            "SELECT utterance_cap FROM sessions WHERE id='s1'"
+        )).fetchone())[0]
+        assert cap == 40, "手动软暂停（error_code NULL）resume 不得增加 cap（仅软上限恢复 +10，CG-D）"
         await finish_round(first_in_flight=False)  # round2：等待/放行 3 次
         f6 = await asyncio.wait_for(q.get(), timeout=5.0)
         assert f6["event"] == "utterance.completed"

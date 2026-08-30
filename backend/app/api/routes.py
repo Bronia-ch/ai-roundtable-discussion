@@ -117,29 +117,34 @@ async def panel_confirm(id: str, body: CommandRequest, request: Request):
     await _apply_command(request, id, "panel/confirm", body.command_id)
 
 
+async def _launch_engine(request: Request, id: str) -> None:
+    """启动**持续运行**（max_turns=None）的引擎任务并登记 registry；get_or_create
+    保证同 session 单引擎；track 拒绝（理论重复）时取消并等待新任务，绝不静默遗留重复任务。"""
+    registry = request.app.state.engine_registry
+
+    async def _make_engine():
+        return DiscussionEngine(
+            id,
+            request.app.state.llm,
+            request.app.state.conn,
+            max_turns=None,  # 生产持续运行（测试引擎显式 max_turns）
+            event_store=request.app.state.event_store,
+        )
+
+    engine = await registry.get_or_create(id, _make_engine)
+    task = asyncio.create_task(engine.start())
+    if not await registry.track(id, task):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 @router.post("/sessions/{id}/discussion/start", status_code=202)
 async def discussion_start(id: str, body: CommandRequest, request: Request):
-    """CG-B 接线：命令 APPLIED 后启动**持续运行**（max_turns=None）的引擎任务并登记
-    registry；幂等重放（DUPLICATE）不重复启动；get_or_create 保证同 session 单引擎。
-    track 拒绝（理论重复）时取消并等待新任务，绝不静默遗留重复任务。"""
+    """CG-B 接线：命令 APPLIED 后经 _launch_engine 启动持续运行引擎任务并登记
+    registry；幂等重放（DUPLICATE）不重复启动（执行体在 APPLIED 分支内）。"""
     outcome = await _apply_command(request, id, "discussion/start", body.command_id)
     if outcome is CommandOutcome.APPLIED:
-        registry = request.app.state.engine_registry
-
-        async def _make_engine():
-            return DiscussionEngine(
-                id,
-                request.app.state.llm,
-                request.app.state.conn,
-                max_turns=None,  # 生产持续运行（测试引擎显式 max_turns）
-                event_store=request.app.state.event_store,
-            )
-
-        engine = await registry.get_or_create(id, _make_engine)
-        task = asyncio.create_task(engine.start())
-        if not await registry.track(id, task):
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await _launch_engine(request, id)
 
 
 @router.post("/sessions/{id}/discussion/pause", status_code=202)
@@ -154,12 +159,28 @@ async def discussion_pause(id: str, body: CommandRequest, request: Request):
 
 @router.post("/sessions/{id}/discussion/resume", status_code=202)
 async def discussion_resume(id: str, body: CommandRequest, request: Request):
-    """CG-B 接线：状态迁移 live 后向引擎发恢复信号（解除下一轮检查点）。"""
+    """CG-D 接线（§10.3/E3、R1/R2/R4）：命令 APPLIED（paused→live）后——
+    1) recover_soft_cap：软上限（utterance_cap_reached）→ cap+10（MIN 封顶 100）并清码；
+       其他错误码（如 utterance_generation_failed）→ 仅清码；手动软暂停（error_code NULL）
+       零改动。
+    2) 任务存活分派：task 存在且未 done（手动暂停的在途引擎）→ engine.resume() 发信号
+       （CG-B 语义不变）；task 不存在/已 done（失败/上限暂停后引擎已终止）→ stop+remove
+       清理旧登记后重建新引擎（恢复模式：count>0 不开场、ordinal 连续）。
+    绝对上限（absolute_cap_reached）→ execute_command 命令门禁 CONFLICT（409）：本路由
+    不执行任何恢复动作（无 cap 变更、无引擎启动——仅 end 可离开）。"""
     outcome = await _apply_command(request, id, "discussion/resume", body.command_id)
     if outcome is CommandOutcome.APPLIED:
-        engine = request.app.state.engine_registry.get_engine(id)
-        if engine is not None:
-            await engine.resume()
+        await transactions.recover_soft_cap(request.app.state.conn, id)  # 软上限 +10 / 仅清码 / 手动零改动
+        registry = request.app.state.engine_registry
+        task = registry.get_task(id)  # 同步取（RED 契约：get_task 非 await）
+        if task is not None and not task.done():
+            engine = registry.get_engine(id)
+            if engine is not None:
+                await engine.resume()  # 手动暂停：在途引擎发恢复信号（CG-B 语义不变）
+        else:
+            await registry.stop(id)    # 反注册已 done/缺失任务（done → 跳过 cancel，纯清理）
+            await registry.remove(id)  # 移除旧引擎引用 → 重建（新任务身份，R1 锁定）
+            await _launch_engine(request, id)
 
 
 @router.post("/sessions/{id}/discussion/end", status_code=202)

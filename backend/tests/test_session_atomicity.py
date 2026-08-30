@@ -159,14 +159,16 @@ async def test_b1_retry_same_command_id_applies_effect_once(conn):
 # ---------------------------------------------------------------- B2：并发状态迁移保护
 
 class _StaleStatusCursor:
-    """伪造门禁读结果：(status, retry_operation)。"""
+    """伪造门禁读结果：(status, retry_operation, error_code)。"""
 
-    def __init__(self, status: str, retry_operation: str | None = None):
+    def __init__(self, status: str, retry_operation: str | None = None,
+                 error_code: str | None = None):
         self._status = status
         self._retry_operation = retry_operation
+        self._error_code = error_code
 
     async def fetchone(self):
-        return (self._status, self._retry_operation)
+        return (self._status, self._retry_operation, self._error_code)
 
 
 class _StaleStatusConn:

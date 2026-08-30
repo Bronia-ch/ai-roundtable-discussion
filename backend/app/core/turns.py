@@ -33,6 +33,17 @@ async def cancel_turn(conn: aiosqlite.Connection, turn_id: str) -> int:
     return row[0]
 
 
+async def mark_turn_failed(conn: aiosqlite.Connection, turn_id: str) -> None:
+    """CG-D 失败矩阵（D3）：utterance 生成失败的轮 → turn 标 failed。
+    status 由 turns.status CHECK 约束校验（含 'failed'）；turns 表无 failed_at 列，
+    不写时间戳。"""
+    await conn.execute(
+        "UPDATE turns SET status='failed' WHERE id = ?",
+        (turn_id,),
+    )
+    await conn.commit()
+
+
 async def is_epoch_valid(conn: aiosqlite.Connection, turn_id: str, epoch: int) -> bool:
     row = await (
         await conn.execute("SELECT generation_epoch FROM turns WHERE id=?", (turn_id,))

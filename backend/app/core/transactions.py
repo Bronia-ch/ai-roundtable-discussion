@@ -17,6 +17,11 @@ _ALLOWED_COLUMNS = {
     "retry_operation",
     "is_sample",
     "expert_count",
+    # CG-D：降级记账列（engine._degrade 经 commit_event 原子更新）
+    "degraded_components",
+    "used_rule_scheduler_count",
+    "failed_turn_count",
+    "permanently_failed_insight_count",
 }
 
 # 命令 → 目标状态（按 state_machine.TRANSITIONS 推导；can_transition 校验合法性）。
@@ -187,6 +192,8 @@ async def execute_command(
       UPDATE（WHERE id AND status），阻止基于过期状态的第二次迁移。
     - retry 在事务内解析 sessions.retry_operation，无路由外读取窗口；
       幂等（DUPLICATE）先于 retry_operation 检查，重复 retry command_id 仍返回 202。
+    - CG-D 门禁：discussion/resume 且 error_code='absolute_cap_reached'（绝对上限
+      不可恢复）→ CONFLICT：不迁移、不写 receipt、不 bump seq——会话仅可 end。
     - 任何 SQL/写入异常：整体 ROLLBACK 后继续传播（HTTP 层形成 500），
       不得把数据库失败伪装成 202。
     """
@@ -211,10 +218,11 @@ async def execute_command(
                 return CommandOutcome.DUPLICATE
             row = await (
                 await conn.execute(
-                    "SELECT status, retry_operation FROM sessions WHERE id = ?", (session_id,)
+                    "SELECT status, retry_operation, error_code FROM sessions WHERE id = ?",
+                    (session_id,),
                 )
             ).fetchone()
-            current_status, retry_operation = row
+            current_status, retry_operation, error_code = row
             actual_type = command_type
             if command_type == "retry":
                 if not retry_operation:
@@ -232,6 +240,11 @@ async def execute_command(
                 if SessionState(current_status) is not SessionState.FINALIZING:
                     await conn.rollback()
                     return CommandOutcome.CONFLICT
+            elif actual_type == "discussion/resume" and error_code == "absolute_cap_reached":
+                # CG-D 绝对上限门禁（§10.3/E3，R4）：cap>=100 的暂停不可恢复——
+                # 不迁移、不写 receipt、不 bump seq（本事务整体回滚），会话仅可 end。
+                await conn.rollback()
+                return CommandOutcome.CONFLICT
             elif not can_transition(SessionState(current_status), target):
                 await conn.rollback()
                 return CommandOutcome.CONFLICT
@@ -268,6 +281,53 @@ async def execute_command(
         if event_store is not None:
             await event_store.publish(conn, session_id, seq)  # 提交后、回滚边界外
         return CommandOutcome.APPLIED
+
+
+async def recover_soft_cap(
+    conn: aiosqlite.Connection,
+    session_id: str,
+) -> bool:
+    """CG-D resume 恢复语义（R2/R2b）：软上限暂停恢复 +10 并清空 error_code。
+
+    仅 error_code='utterance_cap_reached' 增加 cap（MIN(cap+10, 100) 封顶，绝不超过
+    绝对上限）；其他 error_code（失败暂停等）仅清空 error_code——不得增加 cap；
+    error_code 为 NULL（手动软暂停）零改动。绝对上限（absolute_cap_reached）在此
+    不可达：execute_command 门禁已拒（CONFLICT）。
+    不迁移状态（live 由 resume 命令事务写入）、不做事件/seq（恢复语义不产生事件）。
+    返回 True 表示本次恢复了软上限。
+    """
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = await (
+                await conn.execute(
+                    "SELECT error_code, utterance_cap FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+            ).fetchone()
+            if row is None:
+                await conn.rollback()
+                return False
+            error_code, cap = row
+            if error_code == "utterance_cap_reached":
+                await conn.execute(
+                    "UPDATE sessions SET utterance_cap = ?, error_code = NULL WHERE id = ?",
+                    (min(cap + 10, 100), session_id),
+                )
+                await conn.commit()
+                return True
+            if error_code is not None:
+                await conn.execute(
+                    "UPDATE sessions SET error_code = NULL WHERE id = ?", (session_id,)
+                )
+                await conn.commit()
+                return False
+            await conn.rollback()
+            return False
+        except Exception:
+            await conn.rollback()
+            raise
 
 
 async def commit_panel(

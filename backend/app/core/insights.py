@@ -13,6 +13,22 @@ async def create_insight(conn: aiosqlite.Connection, session_id: str, kind: str,
     return iid
 
 
+async def mark_insight_state(
+    conn: aiosqlite.Connection,
+    utterance_id: str,
+    state: str,
+) -> int:
+    """CG-D 降级记账（D5/D6）：insight 失败/结构非法 → 所属 utterance 标
+    permanently_failed（insights 表零行、讨论继续）。state 由 utterances.insight_status
+    CHECK 约束校验（含 'permanently_failed'）；返回受影响行数（utterance 不存在 → 0）。"""
+    cur = await conn.execute(
+        "UPDATE utterances SET insight_status = ? WHERE id = ?",
+        (state, utterance_id),
+    )
+    await conn.commit()
+    return cur.rowcount
+
+
 async def add_evidence(
     conn: aiosqlite.Connection,
     session_id: str,
