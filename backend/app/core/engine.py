@@ -1,12 +1,78 @@
 import asyncio
 import itertools
+import json
 from typing import Any
 
 import aiosqlite
 
-from . import insights, transcript, turns
-from .errors import ErrorClass, classify_error
+from . import insights, transactions, transcript, turns
+from .errors import ErrorClass, SchemaError, classify_error
+from app.llm.reliability import call_with_retry
 from .scheduler import RuleScheduler, pick_speaker
+
+
+REPORT_SYSTEM = (
+    "你是圆桌讨论的会议记录。严格输出 JSON："
+    '{"summary": <string>, "key_consensus": [<string>], '
+    '"main_divergence": [<string>], "unresolved_questions": [<string>], '
+    '"suggested_actions": [<string>]}。summary 为必填的中文讨论总结。'
+)
+REPORT_GENERATION_FAILED = "report_generation_failed"
+
+_REPORT_LIST_FIELDS = ("key_consensus", "main_divergence", "unresolved_questions", "suggested_actions")
+
+
+def _validate_report(resp: Any) -> dict[str, Any]:
+    """LLM 输出不可信：summary 必填（非空字符串）；结构化字段仅接受 str/list，其余忽略。
+    校验失败抛 SchemaError（classify_error → SCHEMA → call_with_retry 立即抛出，不重试）。"""
+    if not isinstance(resp, dict):
+        raise SchemaError("报告响应不是对象")
+    summary = resp.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise SchemaError("报告缺少 summary")
+    cleaned: dict[str, Any] = {"summary": summary}
+    for field in _REPORT_LIST_FIELDS:
+        value = resp.get(field)
+        if isinstance(value, (str, list)):
+            cleaned[field] = value
+    return cleaned
+
+
+async def finalize_report(
+    conn: aiosqlite.Connection,
+    llm: Any,
+    session_id: str,
+    event_store=None,
+) -> None:
+    """finalizing 收尾执行体：LLM 生成报告 → 原子落库 + 迁移 completed
+    （transactions.commit_report）；失败滞留 finalizing + 可恢复三元组
+    （transactions.mark_report_failed），retry 命令驱动重试。
+    LLM/网络调用绝不在 DB 事务内；CancelledError 穿透 except Exception——任务取消零写入。"""
+    row = await (
+        await conn.execute("SELECT topic FROM sessions WHERE id=?", (session_id,))
+    ).fetchone()
+    if row is None:
+        return  # 会话不存在：静默返回（路由层已保证存在；防御会话被并发清理）
+    topic = row[0]
+    try:
+        resp = await call_with_retry(
+            lambda: llm.generate("report", REPORT_SYSTEM, f"讨论主题：{topic}"),
+            classify=classify_error,
+            max_retries=3,
+        )
+        validated = _validate_report(resp)
+    except Exception:
+        await transactions.mark_report_failed(
+            conn, session_id, REPORT_GENERATION_FAILED, event_store=event_store,
+        )
+        return
+    # 成功：报告行 + completed 迁移 + 清空错误三元组（单事务原子，见 transactions.commit_report）
+    await transactions.commit_report(
+        conn, session_id, validated,
+        json.dumps(validated, ensure_ascii=False),
+        degraded=None,  # 降级上下文属 CG-D；CG-C 始终 None
+        event_store=event_store,
+    )
 
 
 class DiscussionEngine:
@@ -183,7 +249,10 @@ class DiscussionEngine:
         self._pause.set()
 
     async def end(self) -> None:
-        """兼容公开 API（test_smoke_real 依赖 end 的存在）：仅发停止信号——不再写
-        completed、不生成 report（状态 finalizing 仅由 discussion/end 命令事务写入；
-        completed/report 流程属 CG-C）。"""
+        """CG-C 收尾接线：先发停止信号（utterance 检查点退出循环），再生成讨论报告。
+        状态 finalizing 已由 discussion/end 命令事务写入；本方法负责报告落库：
+        成功 → completed（commit_report）；失败 → 滞留 finalizing + 可恢复三元组
+        （mark_report_failed），retry 命令驱动重试。CancelledError 穿透 except Exception：
+        任务取消（registry 停机）不写任何数据、不 bump seq。"""
         await self.stop()
+        await finalize_report(self.conn, self.llm, self.session_id, event_store=self.event_store)

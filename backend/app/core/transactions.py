@@ -6,6 +6,7 @@ from typing import Any
 
 import aiosqlite
 
+from app.core.errors import Degradation
 from app.core.state_machine import SessionState, can_transition
 
 # 允许作为 state_updates 键的列（白名单，防注入）
@@ -27,6 +28,7 @@ _COMMANDS: dict[str, SessionState] = {
     "discussion/pause": SessionState.PAUSED,  # live → paused
     "discussion/resume": SessionState.LIVE,  # paused → live
     "discussion/end": SessionState.FINALIZING,  # live/paused → finalizing
+    "report": SessionState.FINALIZING,  # finalizing 重试生成报告（自迁移滞留，见 execute_command 特判）
 }
 
 
@@ -223,7 +225,14 @@ async def execute_command(
             if target is None:
                 await conn.rollback()
                 return CommandOutcome.UNKNOWN_COMMAND
-            if not can_transition(SessionState(current_status), target):
+            if actual_type == "report":
+                # 滞留命令（§10.4 阶梯 6）：finalizing 下重试生成报告——允许"自迁移"
+                # （target == current）。仅此命令豁免 can_transition；resume 等自环
+                # 仍必须 409（test_command_gate_violation_409），不得通用化。
+                if SessionState(current_status) is not SessionState.FINALIZING:
+                    await conn.rollback()
+                    return CommandOutcome.CONFLICT
+            elif not can_transition(SessionState(current_status), target):
                 await conn.rollback()
                 return CommandOutcome.CONFLICT
             # receipt 与业务效果同一事务：此处不 commit，任一步失败随事务回滚
@@ -322,6 +331,139 @@ async def commit_panel(
                 "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
                 "VALUES (?, ?, 'session.state_changed', 1, ?)",
                 (session_id, seq, json.dumps({"state": state}, ensure_ascii=False)),
+            )
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        if event_store is not None:
+            await event_store.publish(conn, session_id, seq)
+        return seq
+
+
+async def commit_report(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    report: dict[str, Any],
+    raw_json: str,
+    degraded: Degradation | None = None,
+    event_store=None,
+) -> int | None:
+    """finalizing 收尾成功回写：INSERT 报告行 + 迁移 completed + 清空错误三元组 + 事件，单事务原子。
+
+    - INSERT OR IGNORE（session_id UNIQUE）是并发裁决点：rowcount=0（报告已存在，
+      另一 finalize 任务已成功）→ 提交并返回 0——不重复迁移、不重复广播（幂等重放）。
+    - CAS `WHERE status='finalizing'`：状态已离开 finalizing → rowcount=0 → 整体回滚，
+      不得留下新 report 行，返回 None（绝不把非 finalizing 会话标成 completed）。
+    - 成功路径清空 error_code/retry_operation：重试成功的报告不带残留失败标记。
+    - 报告行与 completed 迁移同生共死：绝不出现"报告已持久化但状态未完成"。
+    - LLM/网络调用绝不可在本事务内发生。
+    """
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            d = degraded or Degradation()
+            consensus = report.get("key_consensus")
+            divergence = report.get("main_divergence")
+            unresolved = report.get("unresolved_questions")
+            actions = report.get("suggested_actions")
+            cur = await conn.execute(
+                "INSERT OR IGNORE INTO discussion_reports "
+                "(id, session_id, summary, key_consensus, main_divergence, unresolved_questions, "
+                " suggested_actions, raw_json, degraded_components, "
+                " permanently_failed_insight_count, used_rule_scheduler_count, failed_turn_count, "
+                " report_generated_with_degraded_context) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex, session_id,
+                    report["summary"],
+                    json.dumps(consensus, ensure_ascii=False) if consensus is not None else None,
+                    json.dumps(divergence, ensure_ascii=False) if divergence is not None else None,
+                    json.dumps(unresolved, ensure_ascii=False) if unresolved is not None else None,
+                    json.dumps(actions, ensure_ascii=False) if actions is not None else None,
+                    raw_json,
+                    json.dumps(d.degraded_components, ensure_ascii=False),
+                    d.permanently_failed_insight_count,
+                    d.used_rule_scheduler_count,
+                    d.failed_turn_count,
+                    1 if d.report_generated_with_degraded_context else 0,
+                ),
+            )
+            if cur.rowcount == 0:
+                await conn.commit()
+                return 0  # 幂等重放：报告已存在——不迁移、不广播
+            cur = await conn.execute(
+                "UPDATE sessions SET status = 'completed', error_code = NULL, "
+                "retry_operation = NULL, last_event_sequence = last_event_sequence + 1, "
+                "updated_at = datetime('now') WHERE id = ? AND status = 'finalizing'",
+                (session_id,),
+            )
+            if cur.rowcount != 1:
+                await conn.rollback()  # CAS 失败：状态已离开 finalizing → 不留 report 行
+                return None
+            row = await (
+                await conn.execute(
+                    "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            seq = row[0]
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'session.state_changed', 1, ?)",
+                (session_id, seq, json.dumps({"state": "completed"}, ensure_ascii=False)),
+            )
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        if event_store is not None:
+            await event_store.publish(conn, session_id, seq)
+        return seq
+
+
+async def mark_report_failed(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    error_code: str,
+    event_store=None,
+) -> int | None:
+    """finalizing 收尾失败回写：滞留 finalizing + 可恢复错误三元组（error_code/retry_operation）
+    + error.recoverable 事件，单事务原子；提交后精确 seq 广播（G3 注入点）。
+
+    - CAS `WHERE status='finalizing'`：并发已 completed → rowcount=0 → 回滚，不污染已完成会话。
+    - 状态原地不动（滞留语义）；重试由 retry 命令 + retry_operation='report' 驱动。
+    - LLM/网络调用绝不可在本事务内发生。
+    """
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = await conn.execute(
+                "UPDATE sessions SET error_code = ?, retry_operation = 'report', "
+                "last_event_sequence = last_event_sequence + 1, updated_at = datetime('now') "
+                "WHERE id = ? AND status = 'finalizing'",
+                (error_code, session_id),
+            )
+            if cur.rowcount == 0:
+                await conn.rollback()
+                return None  # 已离开 finalizing：不写滞留
+            row = await (
+                await conn.execute(
+                    "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            seq = row[0]
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'error.recoverable', 1, ?)",
+                (
+                    session_id, seq,
+                    json.dumps(
+                        {"error_code": error_code, "retry_operation": "report", "scope": "report"},
+                        ensure_ascii=False,
+                    ),
+                ),
             )
             await conn.commit()
         except Exception:

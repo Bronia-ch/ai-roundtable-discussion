@@ -13,7 +13,7 @@ from app.api.schemas import (
 )
 from app.api.snapshot import get_session_snapshot
 from app.api.sse import resolve_after_seq, sse_stream
-from app.core.engine import DiscussionEngine
+from app.core.engine import DiscussionEngine, finalize_report
 from app.core import transactions
 from app.core.transactions import CommandOutcome
 from app.core import panel as panel_ops  # panel/generate 执行体（LLM 生成 + 原子回写）
@@ -164,8 +164,9 @@ async def discussion_resume(id: str, body: CommandRequest, request: Request):
 
 @router.post("/sessions/{id}/discussion/end", status_code=202)
 async def discussion_end(id: str, body: CommandRequest, request: Request):
-    """CG-B 接线：状态迁移 finalizing 后停止引擎并确定性收尾任务（cancel+await+清理，
-    不遗留后台任务）；finalizing→completed 的 report 流程属 CG-C。"""
+    """CG-C 接线：状态迁移 finalizing 后停止引擎并确定性收尾任务（cancel+await+清理，
+    不遗留后台任务）；随后启动 finalize 任务生成报告（LLM 调用在任务内、DB 事务外）：
+    成功 → completed；失败 → 滞留 finalizing + 可恢复三元组（retry 命令驱动重试）。"""
     outcome = await _apply_command(request, id, "discussion/end", body.command_id)
     if outcome is CommandOutcome.APPLIED:
         registry = request.app.state.engine_registry
@@ -173,13 +174,44 @@ async def discussion_end(id: str, body: CommandRequest, request: Request):
         if engine is not None:
             await engine.stop()  # 循环信号：下一 LLM 调用返回后检查点退出（不等待）
         await registry.stop(id)  # cancel+await+清理（引擎卡在 LLM 调用时 cancel 立即生效）
+        task = asyncio.create_task(
+            finalize_report(
+                request.app.state.conn, request.app.state.llm, id,
+                event_store=request.app.state.event_store,  # G3：commit_report/mark_report_failed 提交后广播
+            )
+        )
+        if not await registry.track(id, task):  # 理论重复：取消并等待，不静默遗留
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @router.post("/sessions/{id}/retry", status_code=202)
 async def retry(id: str, body: CommandRequest, request: Request):
     """安全重试：retry_operation 在命令事务内解析（无路由外读取，无过期窗口）；
-    重复 retry command_id 优先命中 receipt → 202；无待重试操作 → 409。"""
-    await _apply_command(request, id, "retry", body.command_id)
+    重复 retry command_id 优先命中 receipt → 202；无待重试操作 → 409。
+    retry_operation='report'（CG-C）：stop-and-replace 启动新 finalize 任务——
+    先清旧 finalize 任务登记，否则在途旧任务使 track 返回 False、重试分派被静默吞掉。
+    其余 retry_operation（如 panel/generate）仅 202，不启动任务（CG-B 语义不变）。"""
+    outcome = await _apply_command(request, id, "retry", body.command_id)
+    if outcome is CommandOutcome.APPLIED:
+        conn = request.app.state.conn
+        row = await (
+            await conn.execute(
+                "SELECT retry_operation FROM sessions WHERE id = ?", (id,)
+            )
+        ).fetchone()
+        if row is not None and row[0] == "report":
+            registry = request.app.state.engine_registry
+            await registry.stop(id)  # stop-and-replace：先清旧 finalize 任务（cancel+await+清理）
+            task = asyncio.create_task(
+                finalize_report(
+                    conn, request.app.state.llm, id,
+                    event_store=request.app.state.event_store,  # G3：回写提交后广播
+                )
+            )
+            if not await registry.track(id, task):  # 理论重复：取消并等待，不静默遗留
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 @router.get("/sessions/{id}")
