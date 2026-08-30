@@ -1,7 +1,11 @@
+import asyncio
 import json
+from enum import Enum
 from typing import Any
 
 import aiosqlite
+
+from app.core.state_machine import SessionState, can_transition
 
 # 允许作为 state_updates 键的列（白名单，防注入）
 _ALLOWED_COLUMNS = {
@@ -12,6 +16,52 @@ _ALLOWED_COLUMNS = {
     "is_sample",
     "expert_count",
 }
+
+# 命令 → 目标状态（按 state_machine.TRANSITIONS 推导；can_transition 校验合法性）。
+# 位于事务层：execute_command 在 BEGIN IMMEDIATE 之后于事务内解析（含 retry 重放）。
+_COMMANDS: dict[str, SessionState] = {
+    "panel/generate": SessionState.PANEL_GENERATING,  # draft/panel_ready → panel_generating（含 re-roll）
+    "panel/confirm": SessionState.READY,  # panel_ready → ready
+    "discussion/start": SessionState.LIVE,  # ready → live
+    "discussion/pause": SessionState.PAUSED,  # live → paused
+    "discussion/resume": SessionState.LIVE,  # paused → live
+    "discussion/end": SessionState.FINALIZING,  # live/paused → finalizing
+}
+
+
+class CommandOutcome(str, Enum):
+    """execute_command 的结果（路由层映射为 HTTP）。"""
+
+    NOT_FOUND = "not_found"
+    UNKNOWN_COMMAND = "unknown_command"
+    CONFLICT = "conflict"
+    DUPLICATE = "duplicate"
+    APPLIED = "applied"
+
+
+_FALLBACK_LOCK: asyncio.Lock | None = None
+
+
+def _write_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
+    """连接级最小写锁：BEGIN IMMEDIATE → COMMIT/ROLLBACK 完整区间串行化。
+
+    惰性挂载到连接对象（首次调用创建；无 await，并发首调用不会双创建）。
+    共享同一连接的协程若同时 BEGIN IMMEDIATE，SQL 会交错进入同一事务或抛
+    "cannot start a transaction within a transaction"；锁保证单连接上完整写事务
+    不可交错。测试连接（conftest fixture）首次调用自动获得同一把锁，
+    不依赖 lifespan 装配。
+    """
+    lock = getattr(conn, "_ai_write_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        try:
+            setattr(conn, "_ai_write_lock", lock)
+        except AttributeError:
+            global _FALLBACK_LOCK
+            if _FALLBACK_LOCK is None:
+                _FALLBACK_LOCK = asyncio.Lock()
+            lock = _FALLBACK_LOCK
+    return lock
 
 
 async def commit_event(
@@ -25,34 +75,170 @@ async def commit_event(
 
     任一写失败整体回滚。LLM/网络调用绝不可在本事务内发生。
     """
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
-        if state_updates:
-            for key in state_updates:
-                if key not in _ALLOWED_COLUMNS:
-                    raise ValueError(f"不允许的 state_updates 列: {key}")
-            cols = ", ".join(f"{k} = ?" for k in state_updates)
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            if state_updates:
+                for key in state_updates:
+                    if key not in _ALLOWED_COLUMNS:
+                        raise ValueError(f"不允许的 state_updates 列: {key}")
+                cols = ", ".join(f"{k} = ?" for k in state_updates)
+                await conn.execute(
+                    f"UPDATE sessions SET {cols} WHERE id = ?",
+                    (*state_updates.values(), session_id),
+                )
             await conn.execute(
-                f"UPDATE sessions SET {cols} WHERE id = ?",
-                (*state_updates.values(), session_id),
+                "UPDATE sessions SET last_event_sequence = last_event_sequence + 1 WHERE id = ?",
+                (session_id,),
             )
-        await conn.execute(
-            "UPDATE sessions SET last_event_sequence = last_event_sequence + 1 WHERE id = ?",
-            (session_id,),
-        )
-        row = await (
+            row = await (
+                await conn.execute(
+                    "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            seq = row[0]
             await conn.execute(
-                "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, ?, 1, ?)",
+                (session_id, seq, event_type, json.dumps(payload, ensure_ascii=False)),
             )
-        ).fetchone()
-        seq = row[0]
-        await conn.execute(
-            "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
-            "VALUES (?, ?, ?, 1, ?)",
-            (session_id, seq, event_type, json.dumps(payload, ensure_ascii=False)),
-        )
-        await conn.commit()
-        return seq
-    except Exception:
-        await conn.rollback()
-        raise
+            await conn.commit()
+            return seq
+        except Exception:
+            await conn.rollback()
+            raise
+
+
+async def create_session(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    topic: str,
+    expert_count: int,
+    created_at: str,
+) -> int:
+    """原子创建 draft 会话 + 三写（状态/sequence/事件），返回新 sequence（=1）。
+
+    与 commit_event 同一事务模式：INSERT sessions 与 events 任一失败整体回滚。
+    创建事件为 session.state_changed，data.state = draft。
+    """
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            await conn.execute(
+                "INSERT INTO sessions (id, topic, expert_count, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'draft', ?, ?)",
+                (session_id, topic, expert_count, created_at, created_at),
+            )
+            await conn.execute(
+                "UPDATE sessions SET last_event_sequence = last_event_sequence + 1 WHERE id = ?",
+                (session_id,),
+            )
+            row = await (
+                await conn.execute(
+                    "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            seq = row[0]
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'session.state_changed', 1, ?)",
+                (session_id, seq, json.dumps({"state": "draft"}, ensure_ascii=False)),
+            )
+            await conn.commit()
+            return seq
+        except Exception:
+            await conn.rollback()
+            raise
+
+
+async def execute_command(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    command_type: str,
+    command_id: str,
+) -> CommandOutcome:
+    """单一原子命令事务：receipt、状态迁移、事件写入同生共死。
+
+    事务内顺序（连接级写锁串行化 BEGIN→COMMIT 全区间）：
+    NOT_FOUND → 幂等(DUPLICATE) → retry 解析 → 目标解析(UNKNOWN_COMMAND) → 门禁(CONFLICT)
+    → INSERT receipt（不 commit）→ CAS 条件更新（rowcount≠1 → ROLLBACK CONFLICT）
+    → 读新 seq → INSERT state_changed 事件 → COMMIT(APPLIED)。
+
+    - 门禁与 CAS 均基于事务内读取的 current_status；CAS 以 current_status 为条件
+      UPDATE（WHERE id AND status），阻止基于过期状态的第二次迁移。
+    - retry 在事务内解析 sessions.retry_operation，无路由外读取窗口；
+      幂等（DUPLICATE）先于 retry_operation 检查，重复 retry command_id 仍返回 202。
+    - 任何 SQL/写入异常：整体 ROLLBACK 后继续传播（HTTP 层形成 500），
+      不得把数据库失败伪装成 202。
+    """
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = await (
+                await conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+            ).fetchone()
+            if row is None:
+                await conn.rollback()
+                return CommandOutcome.NOT_FOUND
+            existing = await (
+                await conn.execute(
+                    "SELECT 1 FROM command_receipts WHERE session_id=? AND command_id=?",
+                    (session_id, command_id),
+                )
+            ).fetchone()
+            if existing is not None:
+                await conn.rollback()
+                return CommandOutcome.DUPLICATE
+            row = await (
+                await conn.execute(
+                    "SELECT status, retry_operation FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            current_status, retry_operation = row
+            actual_type = command_type
+            if command_type == "retry":
+                if not retry_operation:
+                    await conn.rollback()
+                    return CommandOutcome.CONFLICT
+                actual_type = retry_operation
+            target = _COMMANDS.get(actual_type)
+            if target is None:
+                await conn.rollback()
+                return CommandOutcome.UNKNOWN_COMMAND
+            if not can_transition(SessionState(current_status), target):
+                await conn.rollback()
+                return CommandOutcome.CONFLICT
+            # receipt 与业务效果同一事务：此处不 commit，任一步失败随事务回滚
+            await conn.execute(
+                "INSERT INTO command_receipts (session_id, command_id, command_type) "
+                "VALUES (?, ?, ?)",
+                (session_id, command_id, command_type),
+            )
+            # CAS：条件更新阻止基于过期状态的第二次迁移（rowcount 必须恰为 1）
+            cur = await conn.execute(
+                "UPDATE sessions SET status = ?, last_event_sequence = last_event_sequence + 1, "
+                "updated_at = datetime('now') WHERE id = ? AND status = ?",
+                (target.value, session_id, current_status),
+            )
+            if cur.rowcount != 1:
+                await conn.rollback()
+                return CommandOutcome.CONFLICT
+            seq_row = await (
+                await conn.execute(
+                    "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            seq = seq_row[0]
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'session.state_changed', 1, ?)",
+                (session_id, seq, json.dumps({"state": target.value}, ensure_ascii=False)),
+            )
+            await conn.commit()
+            return CommandOutcome.APPLIED
+        except Exception:
+            await conn.rollback()
+            raise
