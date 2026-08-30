@@ -71,10 +71,12 @@ async def commit_event(
     event_type: str,
     payload: dict[str, Any],
     state_updates: dict[str, Any] | None = None,
+    event_store=None,
 ) -> int:
     """原子三写：应用业务状态 + 递增 last_event_sequence + 插入 events，返回新 sequence。
 
     任一写失败整体回滚。LLM/网络调用绝不可在本事务内发生。
+    event_store 注入点（G3）：提交后以本地精确 seq 广播（回滚边界外，失败不回滚已提交事务）。
     """
     lock = _write_lock(conn)
     async with lock:
@@ -105,10 +107,12 @@ async def commit_event(
                 (session_id, seq, event_type, json.dumps(payload, ensure_ascii=False)),
             )
             await conn.commit()
-            return seq
         except Exception:
             await conn.rollback()
             raise
+        if event_store is not None:
+            await event_store.publish(conn, session_id, seq)
+        return seq
 
 
 async def create_session(
@@ -117,11 +121,13 @@ async def create_session(
     topic: str,
     expert_count: int,
     created_at: str,
+    event_store=None,
 ) -> int:
     """原子创建 draft 会话 + 三写（状态/sequence/事件），返回新 sequence（=1）。
 
     与 commit_event 同一事务模式：INSERT sessions 与 events 任一失败整体回滚。
     创建事件为 session.state_changed，data.state = draft。
+    event_store 注入点（G3）：提交后以本地精确 seq 广播 draft 创建事件。
     """
     lock = _write_lock(conn)
     async with lock:
@@ -148,10 +154,12 @@ async def create_session(
                 (session_id, seq, json.dumps({"state": "draft"}, ensure_ascii=False)),
             )
             await conn.commit()
-            return seq
         except Exception:
             await conn.rollback()
             raise
+        if event_store is not None:
+            await event_store.publish(conn, session_id, seq)
+        return seq
 
 
 async def execute_command(
@@ -159,8 +167,14 @@ async def execute_command(
     session_id: str,
     command_type: str,
     command_id: str,
+    event_store=None,
 ) -> CommandOutcome:
     """单一原子命令事务：receipt、状态迁移、事件写入同生共死。
+
+    event_store 注入点（G3）：APPLIED 提交后以本地精确 seq 广播 state_changed——
+    命令状态事件必须先于路由启动的引擎 utterance 广播（帧顺序由接线保证）。
+    publish 在 commit 之后、异常回滚边界之外执行：广播失败时已提交状态保留、
+    异常上抛（HTTP 500）——客户端幂等重试返回 DUPLICATE 202，SSE 端经 replay 自愈。
 
     事务内顺序（连接级写锁串行化 BEGIN→COMMIT 全区间）：
     NOT_FOUND → 幂等(DUPLICATE) → retry 解析 → 目标解析(UNKNOWN_COMMAND) → 门禁(CONFLICT)
@@ -239,10 +253,12 @@ async def execute_command(
                 (session_id, seq, json.dumps({"state": target.value}, ensure_ascii=False)),
             )
             await conn.commit()
-            return CommandOutcome.APPLIED
         except Exception:
             await conn.rollback()
             raise
+        if event_store is not None:
+            await event_store.publish(conn, session_id, seq)  # 提交后、回滚边界外
+        return CommandOutcome.APPLIED
 
 
 async def commit_panel(
@@ -251,6 +267,7 @@ async def commit_panel(
     participants: list[tuple] | None,
     state: str,
     error_code: str | None,
+    event_store=None,
 ) -> int:
     """panel/generate 执行体回写：可选替换 participants + 状态/error_code + sequence + 事件，单事务原子。
 
@@ -260,6 +277,7 @@ async def commit_panel(
     - 状态为无条件 UPDATE：panel_generating 下无合法并发命令（TRANSITIONS 无出边且
       panel/generate 在 panel_generating 下 CONFLICT），命令门禁已封死并发面。
     LLM/网络调用绝不可在本事务内发生（调用方在事务外完成生成与校验）。
+    event_store 注入点（G3）：提交后以本地精确 seq 广播（回滚边界外，失败不回滚已提交事务）。
     """
     lock = _write_lock(conn)
     async with lock:
@@ -306,7 +324,9 @@ async def commit_panel(
                 (session_id, seq, json.dumps({"state": state}, ensure_ascii=False)),
             )
             await conn.commit()
-            return seq
         except Exception:
             await conn.rollback()
             raise
+        if event_store is not None:
+            await event_store.publish(conn, session_id, seq)
+        return seq

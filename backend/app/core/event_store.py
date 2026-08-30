@@ -33,14 +33,31 @@ class EventStore:
                 (session_id, after_seq),
             )
         ).fetchall()
-        return [
-            {
-                "event": r[1],
-                "sequence": r[0],
-                "schema_version": r[2],
-                "session_id": session_id,
-                "timestamp": r[4],
-                "data": json.loads(r[3]),
-            }
-            for r in rows
-        ]
+        return [self._envelope(r, session_id) for r in rows]
+
+    @staticmethod
+    def _envelope(row, session_id: str) -> dict:
+        """replay 行 → 广播 envelope。publish 与 replay 共用同一构造——两通道必然同构。"""
+        return {
+            "event": row[1],
+            "sequence": row[0],
+            "schema_version": row[2],
+            "session_id": session_id,
+            "timestamp": row[4],
+            "data": json.loads(row[3]),
+        }
+
+    async def publish(self, conn: aiosqlite.Connection, session_id: str, seq: int) -> None:
+        """事务提交后以精确 seq 广播：读 WHERE session_id=? AND sequence=? 的**该行**
+        构造 envelope 后 broadcast——绝不通过"读取最新事件"推断（读最新会错位广播）。
+        无该行 → KeyError（调用方事务已提交，广播失败由调用方/重放自愈）。"""
+        row = await (
+            await conn.execute(
+                "SELECT sequence, event_type, schema_version, payload, created_at FROM events "
+                "WHERE session_id=? AND sequence=?",
+                (session_id, seq),
+            )
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"publish: no event at {session_id}:{seq}")
+        await self.broadcast(session_id, self._envelope(row, session_id))

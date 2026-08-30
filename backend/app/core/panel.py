@@ -75,8 +75,9 @@ async def _has_panel(conn, session_id: str) -> bool:
     return row is not None
 
 
-async def generate(conn, llm, session_id: str) -> None:
-    """panel/generate 执行体：成功落库并回写 panel_ready；失败按有无旧阵容回退。"""
+async def generate(conn, llm, session_id: str, event_store=None) -> None:
+    """panel/generate 执行体：成功落库并回写 panel_ready；失败按有无旧阵容回退。
+    event_store 注入点（G3）：commit_panel 回写事务提交后以精确 seq 广播 state_changed。"""
     row = await (
         await conn.execute(
             "SELECT topic, expert_count FROM sessions WHERE id=?", (session_id,)
@@ -98,9 +99,18 @@ async def generate(conn, llm, session_id: str) -> None:
         # 阵容失败（§10.4.4）：无旧阵容回 draft；有旧阵容保留旧阵容回 panel_ready
         error = PANEL_GENERATION_FAILED
         if await _has_panel(conn, session_id):
-            await transactions.commit_panel(conn, session_id, None, "panel_ready", error)
+            await transactions.commit_panel(
+                conn, session_id, None, "panel_ready", error,
+                event_store=event_store,  # G3：re-roll 失败回退提交后广播
+            )
         else:
-            await transactions.commit_panel(conn, session_id, None, "draft", error)
+            await transactions.commit_panel(
+                conn, session_id, None, "draft", error,
+                event_store=event_store,  # G3：首次失败回退提交后广播
+            )
         return
     # 成功：替换式原子落库（首次无旧阵容时 DELETE 影响 0 行）+ 回写 panel_ready + 清空 error_code
-    await transactions.commit_panel(conn, session_id, _as_rows(host, experts), "panel_ready", None)
+    await transactions.commit_panel(
+        conn, session_id, _as_rows(host, experts), "panel_ready", None,
+        event_store=event_store,  # G3：成功回写提交后广播
+    )
