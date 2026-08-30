@@ -982,7 +982,99 @@ Phase 4 最终核验必须包括：
 
 ---
 
-（后续阶段：DDD 设计系统、TDD 核心逻辑、E2E、最终修复/验收的 Prompt 将按阶段追加。）
+## 第 10 条 · Phase 5 E2E 与系统修复（阶段摘要）
+
+**阶段**：Phase 5 E2E 与系统修复（实施计划 10.25h）
+**技能**：superpowers:executing-plans + superpowers:test-driven-development（异常时 systematic-debugging）
+
+**意图**：E2E 连通性 harness、命令原子化（B1/B2 修复）、阵容生成原子化、引擎生命周期（start/pause/resume/end）与 SSE 发布、finalize 报告与重试恢复。
+
+> **原始 Prompt 说明**：Phase 5 的逐字原始 Prompt 未保留在本会话可恢复的确认记录中，**按阶段摘要记录**（依据：实施计划 `2026-08-28-ai-roundtable-mvp-implementation.md`、Git 提交历史、现有 prompt-log 尾部状态）。未逐字恢复，不伪称原话。
+
+**Git 提交历史（Phase 5 → CG-D 前，均 conventional commits）**：
+
+| Commit | 提交信息（原文） | 阶段摘要职责 |
+|--------|------------------|--------------|
+| `4d40e61` | `feat: add atomic session command contracts` | 命令原子化：receipt/状态迁移/事件同事务 + CAS；B1（崩溃窗口 receipt 残留）与 B2（并发基于过期状态无条件覆盖）修复，RED 证据见 `tests/test_session_atomicity.py` 文件头 |
+| `f3f56f8` | `test(e2e): add backend connectivity harness` | E2E 连通性 harness（后端 /sessions 契约冒烟） |
+| `938cc1a` | `feat(panel): add atomic panel generation` | 阵容生成原子化（执行体 LLM 生成 + 原子回写） |
+| `8c503aa` | `feat(discussion): add engine lifecycle and SSE publishing` | 引擎生命周期 start/pause/resume/end + SSE 发布 |
+| `7340934` | `feat(discussion): finalize reports with retry recovery` | finalize 报告 + 失败滞留 + retry 命令重试恢复 |
+
+**关键设计决策（阶段摘要）**：E2E 由 `playwright.config.ts` webServer 自动编排——后端内存 SQLite + `LLM_BASE_URL=http://127.0.0.1:9/v1` 网络隔离 + vite dev，Playwright 用 `channel: "msedge"`；命令路由统一 `POST {"command_id": "..."}` 经 `command_receipts` 幂等（重复 ID 202 无副作用）。
+
+### 当前状态
+
+Phase 5 提交完成、全量离线回归通过后进入 CG-D 收尾（见第 11 条）。真实 DeepSeek API 全程未执行。
+
+---
+
+## 第 11 条 · CG-D 收尾：降级阶梯与上限恢复（本会话逐字已确认记录）
+
+**阶段**：CG-D（system-debugging 收尾，定向 GREEN → 全量回归 → 提交 `95b6bfa`）
+**技能**：superpowers:systematic-debugging + superpowers:test-driven-development
+
+**意图**：CG-D 5 项定向 GREEN 失败（D5/D6/D7 TypeError、R1 UNIQUE 冲突、D9 帧断言矛盾）与全量回归 B2 500 的根因定位、获批修复与验收提交；之后保持未 push。
+
+### 原始 Prompt（本会话逐字，已确认记录）
+
+```text
+[CG-D 收尾 · 逐字批准与指令序列]
+1. 批准仅编辑 backend/app/core/engine.py 两处：1. mark_insight_state 补传 self.conn；2. 恢复模式中复用同 session、同 ordinal、status='failed' 的 turn，避免 R1 唯一约束冲突。不得修改其他生产文件、运行测试、提交或 push；完成后报告实际 diff。
+2. 批准仅编辑 backend/tests/test_degradation.py 的 D9：将帧断言改为 4 帧 [live1, host2, expert3, paused4]，断言 paused 的 sequence 为 4，并同步 docstring；保留 count == 2、paused 与 error_code 等其余断言。不运行测试、提交或 push；完成后报告实际 diff 与 git status --short。
+3. 批准仅运行 cd backend; SMOKE_REAL_LLM=0 python -m pytest tests/test_degradation.py tests/test_routes.py -q。不得修改文件、提交或 push；完整保留 pytest 输出与退出码，并报告结果、git diff --check 与 git status --short。
+4. 批准仅运行全量后端测试：cd backend; SMOKE_REAL_LLM=0 python -m pytest tests -q。不得修改文件、暂存、提交或 push；完整保留 pytest 输出与退出码，并报告结果、git diff --check、git diff --stat、git status --short。
+5. 批准仅编辑 backend/tests/test_session_atomicity.py：更新 _StaleStatusCursor 为返回 (status, retry_operation, error_code) 三元组，error_code 默认 None；不得改动 B2 断言、生产代码或其他文件，也不得运行测试、提交或 push。完成后报告实际 diff 与 git status --short。
+6. 批准仅运行全量后端测试：cd backend; SMOKE_REAL_LLM=0 python -m pytest tests -q。不得编辑文件、暂存、提交或 push；完整保留 pytest 输出与退出码，并报告 git diff --check、git status --short。
+7. 批准仅暂存并审阅 CG-D 的 10 个文件：7 个生产文件、backend/tests/test_routes.py、backend/tests/test_session_atomicity.py、backend/tests/test_degradation.py。先执行精确 git add，再展示 git diff --cached --stat、git diff --cached、git diff --cached --check 和 git status --short。不得提交或 push。
+8. 批准仅提交当前已暂存的 10 个 CG-D 文件，提交信息使用：feat(engine): add degradation ladder and cap recovery。提交后仅报告 commit hash、git show --stat --oneline HEAD 与 git status --short；不得 push、不得修改或暂存其他文件。
+9. 验收完成，保持未 push。请结束当前任务，不再执行任何命令或修改。
+```
+
+### 实际挑战与纠偏（已确认）
+
+1. **D5/D6/D7 TypeError**：`mark_insight_state(uid, ...)` 漏传 `self.conn`；批准 diff 自审漏检，已致歉并按批准补传（engine.py）。
+2. **R1 UNIQUE 冲突**：失败轮占位 turn（session_id, sequence, status='failed'）与恢复重建 `create_turn` 撞 `UNIQUE(session_id, sequence)` → 任务崩溃；批准方案 C：round 路径先查 `status='failed'` 复用占位 turn，零测试改动。
+3. **D9 帧断言自相矛盾**：count==2 时专家 utterance 必广播，无法同时满足 3 帧 paused seq3；批准修订为 4 帧 + paused seq4 + docstring 同步，其余断言保留。
+4. **B2 全量回归 500**：CG-D 门禁读扩为 3 列（status, retry_operation, error_code），`_StaleStatusCursor` 旧 2 元组解包 ValueError；批准测试替身补第 3 列（默认 None），生产代码零改动。
+
+### RED→GREEN 证据
+
+- 定向 `tests/test_degradation.py tests/test_routes.py`：27/27 通过（含 D1–D12、R1、R2、R2b、R4、M1 与路由全绿）。
+- 全量 `tests`：**217 passed / 1 skipped**（真实 smoke 恒定 SKIPPED）。
+- `git diff --check` 干净；10 文件暂存 → 提交 `95b6bfa feat(engine): add degradation ladder and cap recovery`；未 push。
+
+### 当前状态
+
+CG-D 验收完成，`95b6bfa` 保持未 push；进入 Phase 6 最终交付准备（第 12 条）。
+
+---
+
+## 第 12 条 · 最终交付准备（Phase 6，原始 Prompt 逐字 + 两条纠偏逐字）
+
+**阶段**：Phase 6 最终交付准备（文档补齐、四类测试、扫描、交付清单）
+**技能**：superpowers:verification-before-completion + superpowers:executing-plans
+
+**意图**：只读核对 → 补齐 README / architecture / development-workflow / prompt-log → 运行后端全量 pytest、前端 Vitest、前端 build、全量 Playwright E2E → 敏感信息扫描 → 交付清单 → 展示 diff/测试/扫描结果与拟暂存清单，**停等单独批准**；不提交、不打包 ZIP、不建远端、不 push、不发邮件。
+
+### 原始 Prompt（逐字保存）
+
+```text
+开始 Phase 6 最终交付准备。先只读核对现有实现、测试、文档和 Git 历史；不得访问真实 LLM、不得读取或输出密钥、不得 push、不得发邮件。按作业要求补齐并提交以下内容：1. 新建根目录 README.md（环境要求、安装、后端与前端启动、.env.example 配置说明、单 worker 约束、后端/前端/E2E 测试命令、技术选型、主要 API、已完成能力与已知边界）。2. 完善 docs/architecture.md（顶层架构、业务/基础设施 bounded contexts、Mermaid ER 图、SQLite 表与迁移说明、HTTP/API 与 SSE 契约、FakeLLM/真实 smoke 的测试策略）。3. 新建 docs/development-workflow.md，中文约 1–1.5 页（Claude Code + DeepSeek V4 Pro、Superpowers/UI UX Pro Max、SDD/DDD/TDD/E2E 实际流程，至少 2–3 个真实问题及修复路径；不得伪造未执行的真实 API 结果）。4. 在 docs/prompt-log.md 追加 Phase 5、CG-D 和最终验收的原始 Prompt/简要纠偏记录，保持脱敏。5. 运行并完整报告：后端全量 pytest（SMOKE_REAL_LLM=0）、前端 Vitest、前端 build、全量 Playwright E2E；若 E2E 失败，先诊断并提出最小修复方案。6. 运行 Git 历史与敏感信息扫描；创建 docs/delivery-checklist.md（ZIP 必含项、明确排除 .env、数据库运行文件、依赖目录、测试报告和密钥）。完成上述本地交付物后，展示实际 diff、测试结果、扫描结果和拟暂存文件清单，停止等待我的单独批准；不得提交、打包 ZIP、创建远端仓库、push 或发邮件。
+```
+
+### 实际挑战与纠偏（逐字）
+
+```text
+1. 不读取 C:\Users\L\.claude\... 下的任何会话记录，也不要执行该脚本。Prompt 日志只依据仓库现有 docs/prompt-log.md、实施计划、Git 提交历史和本次已确认的 CG-D 记录补齐；不得伪造"原始 Prompt"，对无法逐字恢复的内容标注为"阶段摘要"。继续完成其余本地交付物盘点与文档草案，仍不得访问真实 LLM、push、发邮件、提交或打包。
+2. 不要修改 backend/.env.example 为 LLM_MODEL=deepseek-chat，也不要将其表述为 DeepSeek V4 Pro。先确认作业要求与实际可用模型标识的差异；在未验证前，模板使用 LLM_MODEL=your-deepseek-v4-pro-model-id 占位符，并在 README 中说明需由用户按账户可用的 V4 Pro 模型 ID 填写。继续其他本地文档工作，不访问真实 LLM、不 push、不发邮件、不提交。
+```
+
+**落地结论**：Phase 5 条目按"阶段摘要"记录（第 10 条）；CG-D 用本会话逐字已确认记录（第 11 条）；`.env.example` 模型名为占位符并注明"未验证不得推断"；README/architecture/development-workflow/prompt-log/delivery-checklist 已补齐；四类测试全部通过——后端 pytest 217 passed + 1 skipped（真实 smoke 恒定 SKIPPED）、前端 Vitest 34 passed、前端 build 成功、Playwright E2E 7 passed；敏感信息扫描（工作树 + Git 全历史，7 类模式）0 命中。真实 DeepSeek API 从未执行、模型 ID 未验证。
+
+### 当前状态
+
+6 个交付文件（README.md、backend/.env.example、docs/architecture.md、docs/development-workflow.md、docs/prompt-log.md、docs/delivery-checklist.md）已暂存并展示完整 cached diff，**等待单独批准**；未提交、未打包 ZIP、未创建远端仓库、未 push、未发邮件。获批后按 `docs/delivery-checklist.md` 执行提交与分发。
 
 ---
 
