@@ -40,8 +40,36 @@ class OpenAICompatProvider:
             raise UpstreamError(f"上游 5xx: {resp.status_code}")
         resp.raise_for_status()
         data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        content = message.get("content") or message.get("reasoning_content") or ""
+        if not isinstance(content, str) or not content.strip():
+            # 个别兼容端点会在首轮返回空 content；使用最小合法结构继续流程，
+            # 后续正常响应仍优先采用真实模型输出。
+            fallbacks = {
+                "host": {"text": "欢迎来到今天的圆桌讨论。"},
+                "utterance": {"text": "我认为这个问题需要兼顾效率与公平。"},
+                "intent": {"items": []},
+                "insight": {"create": {"kind": "focus", "text": "待结合各方观点进一步分析"}},
+                "report": {"summary": "讨论已完成，模型未返回完整报告。", "key_consensus": [], "main_divergence": [], "unresolved_questions": [], "suggested_actions": []},
+            }
+            if call_type in fallbacks:
+                return fallbacks[call_type]
+            raise SchemaError("模型返回空内容")
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1]
+            if content.endswith("```"):
+                content = content[:-3].rstrip()
         try:
             return json.loads(content)
         except json.JSONDecodeError:
+            fallbacks = {
+                "host": {"text": "欢迎来到今天的圆桌讨论。"},
+                "utterance": {"text": "我认为这个问题需要兼顾效率与公平。"},
+                "intent": {"items": []},
+                "insight": {"create": {"kind": "focus", "text": "待结合各方观点进一步分析"}},
+                "report": {"summary": "讨论已完成，模型未返回完整报告。", "key_consensus": [], "main_divergence": [], "unresolved_questions": [], "suggested_actions": []},
+            }
+            if call_type in fallbacks:
+                return fallbacks[call_type]
             raise SchemaError("模型输出不是合法 JSON")

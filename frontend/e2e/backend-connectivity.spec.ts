@@ -47,8 +47,10 @@ test("browser reaches the real backend via same-origin /sessions", async ({ page
     "expert_count",
     "insights",
     "last_sequence",
+    "participants",
     "session_id",
     "status",
+    "summary",
     "topic",
     "transcript",
   ]);

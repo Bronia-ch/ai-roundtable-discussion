@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { applyEvent, applySnapshot, initialState } from "../src/store/applyEvent";
 import { connectEvents } from "../src/api/sse";
-import { postCommand } from "../src/api/client";
+import { createSession, listSessions, postCommand } from "../src/api/client";
 import { useSessionEvents } from "../src/store/useSessionEvents";
 import type { SSEEvent } from "../src/types";
 import type { Snapshot } from "../src/store/types";
@@ -20,6 +20,8 @@ const SNAPSHOT: Snapshot = {
   insights: [
     { id: "i1", kind: "consensus", text: "x", support_count: 1, oppose_count: 0, status: "active", version: 1 },
   ],
+  participants: [],
+  summary: null,
 };
 
 const envelope = (over: Partial<SSEEvent> = {}): SSEEvent => ({
@@ -71,6 +73,9 @@ beforeEach(() => {
   FakeEventSource.instances = [];
 });
 
+const HOST = { id: "h1", session_id: "s1", role: "host", name: "周", profession: "p", title: "t", stance: "s", avatar_color: "#111", avatar_emoji: "🎙️", runtime_state: "idle", public_focus: "" };
+const EXPERT = { id: "e1", session_id: "s1", role: "expert", name: "林", profession: "p", title: "t", stance: "s", avatar_color: "#222", avatar_emoji: "🤖", runtime_state: "idle", public_focus: "" };
+
 describe("applySnapshot", () => {
   it("初始化为快照状态：状态、Transcript、洞察、last_sequence", () => {
     const state = applySnapshot(initialState(), SNAPSHOT);
@@ -79,25 +84,30 @@ describe("applySnapshot", () => {
     expect(state.lastSequence).toBe(5);
     expect(state.transcript).toEqual(SNAPSHOT.transcript);
     expect(state.insights).toEqual(SNAPSHOT.insights);
+    expect(state.topic).toBe("t");
+    expect(state.participants).toEqual([]);
+    expect(state.summary).toBeNull();
   });
 
-  it("切换到新会话快照时清空旧会话 participants（会话隔离；刷新恢复阵容为已知契约缺口，不扩服务端快照）", () => {
+  it("快照恢复阵容与摘要（刷新恢复契约：与 panel.generated / discussion.completed 事件同构）", () => {
+    const snap: Snapshot = {
+      ...SNAPSHOT,
+      participants: [HOST, EXPERT],
+      summary: '{"summary": "讨论完成"}',
+    };
+    const state = applySnapshot(initialState(), snap);
+    expect(state.participants).toEqual([HOST, EXPERT]);
+    expect(state.summary).toBe('{"summary": "讨论完成"}');
+  });
+
+  it("切换到新会话快照时以新快照阵容替换（会话隔离；阵容随快照恢复）", () => {
     const stateA = applySnapshot(initialState(), SNAPSHOT);
     const withPanel = applyEvent(
       stateA,
-      envelope({
-        event: "panel.generated",
-        sequence: 6,
-        data: {
-          host: { id: "h1", session_id: "s1", role: "host", name: "周", profession: "p", title: "t", stance: "s", avatar_color: "#111", avatar_emoji: "🎙️", runtime_state: "idle", public_focus: "" },
-          experts: [
-            { id: "e1", session_id: "s1", role: "expert", name: "林", profession: "p", title: "t", stance: "s", avatar_color: "#222", avatar_emoji: "🤖", runtime_state: "idle", public_focus: "" },
-          ],
-        },
-      }),
+      envelope({ event: "panel.generated", sequence: 6, data: { host: HOST, experts: [EXPERT] } }),
     );
     expect(withPanel.participants).toHaveLength(2);
-    const snapB: Snapshot = { ...SNAPSHOT, session_id: "s2" };
+    const snapB: Snapshot = { ...SNAPSHOT, session_id: "s2", participants: [] };
     const stateB = applySnapshot(withPanel, snapB);
     expect(stateB.participants).toEqual([]);
     expect(stateB.sessionId).toBe("s2");
@@ -186,13 +196,111 @@ describe("applyEvent", () => {
 
   it("panel.generated 设置参与人", () => {
     const state = applySnapshot(initialState(), SNAPSHOT);
-    const host = { id: "h1", session_id: "s1", role: "host", name: "周", profession: "p", title: "t", stance: "s", avatar_color: "#111", avatar_emoji: "🎙️", runtime_state: "idle", public_focus: "" };
-    const expert = { id: "e1", session_id: "s1", role: "expert", name: "林", profession: "p", title: "t", stance: "s", avatar_color: "#222", avatar_emoji: "🤖", runtime_state: "idle", public_focus: "" };
     const next = applyEvent(
       state,
-      envelope({ event: "panel.generated", sequence: 6, data: { host, experts: [expert] } }),
+      envelope({ event: "panel.generated", sequence: 6, data: { host: HOST, experts: [EXPERT] } }),
     );
-    expect(next.participants).toEqual([host, expert]);
+    expect(next.participants).toEqual([HOST, EXPERT]);
+  });
+
+  it("participant.state_changed 更新席位 runtime_state", () => {
+    const state = applySnapshot(initialState(), SNAPSHOT);
+    const withPanel = applyEvent(
+      state,
+      envelope({ event: "panel.generated", sequence: 6, data: { host: HOST, experts: [EXPERT] } }),
+    );
+    const next = applyEvent(
+      withPanel,
+      envelope({
+        event: "participant.state_changed",
+        sequence: 7,
+        data: { participant_id: "e1", state: "speaking" },
+      }),
+    );
+    expect(next.participants.find((p) => p.id === "e1")?.runtime_state).toBe("speaking");
+    expect(next.participants.find((p) => p.id === "h1")?.runtime_state).toBe("idle");
+  });
+
+  it("discussion.completed 保存最终报告摘要", () => {
+    const state = applySnapshot(initialState(), SNAPSHOT);
+    const next = applyEvent(
+      state,
+      envelope({
+        event: "discussion.completed",
+        sequence: 6,
+        data: { summary: '{"summary": "讨论完成"}', result_ref: "r1" },
+      }),
+    );
+    expect(next.summary).toBe('{"summary": "讨论完成"}');
+  });
+
+  it("panel.generation_failed 记录 errorCode", () => {
+    const state = applySnapshot(initialState(), SNAPSHOT);
+    const next = applyEvent(
+      state,
+      envelope({
+        event: "panel.generation_failed",
+        sequence: 6,
+        data: { error_code: "panel_generation_failed" },
+      }),
+    );
+    expect(next.errorCode).toBe("panel_generation_failed");
+  });
+});
+
+describe("createSession", () => {
+  it("POST /sessions 携带 topic/expert_count，返回会话条目", async () => {
+    const post = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        session_id: "s9",
+        topic: "AI",
+        expert_count: 3,
+        status: "draft",
+        created_at: "t",
+      }),
+    }));
+    const created = await createSession("AI", 3, post);
+    expect(post).toHaveBeenCalledWith(
+      "/sessions",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(JSON.parse(post.mock.calls[0][1].body)).toEqual({ topic: "AI", expert_count: 3 });
+    expect(created.session_id).toBe("s9");
+  });
+
+  it("非 2xx 抛错", async () => {
+    const post = vi.fn(async () => ({
+      ok: false,
+      status: 422,
+      json: async () => undefined,
+    }));
+    await expect(createSession("", 3, post)).rejects.toThrow("422");
+  });
+});
+
+describe("listSessions", () => {
+  it("GET /sessions 返回条目数组", async () => {
+    const load = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        sessions: [
+          { session_id: "s1", topic: "t", expert_count: 4, status: "draft", created_at: "c" },
+        ],
+      }),
+    }));
+    const sessions = await listSessions(load);
+    expect(load).toHaveBeenCalledWith("/sessions");
+    expect(sessions).toEqual([
+      { session_id: "s1", topic: "t", expert_count: 4, status: "draft", created_at: "c" },
+    ]);
+  });
+
+  it("非 2xx 抛错", async () => {
+    const load = vi.fn(async () => ({ ok: false, status: 500 }));
+    await expect(listSessions(load)).rejects.toThrow("500");
   });
 });
 
@@ -336,5 +444,35 @@ describe("useSessionEvents", () => {
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
     expect(first.closed).toBe(true);
     expect(FakeEventSource.instances[1].url).toBe("/sessions/s2/events?after_seq=5");
+  });
+
+  it("sessionId 切换先复位：新会话快照失败时不残留旧会话内容/错误码", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes("/s2")) throw new Error("network down");
+      return { ok: true, status: 200, json: async () => SNAPSHOT };
+    });
+    const { result, rerender } = renderHook(
+      ({ id }) => useSessionEvents(id, { fetchImpl, EventSourceImpl: FakeEventSource }),
+      { initialProps: { id: "s1" } },
+    );
+    await waitFor(() => expect(result.current.topic).toBe("t"));
+    rerender({ id: "s2" });
+    await waitFor(() => expect(result.current.errorCode).toBe("session_load_failed"));
+    expect(result.current.sessionId).toBeNull();
+    expect(result.current.topic).toBeNull();
+    expect(result.current.transcript).toHaveLength(0);
+    expect(result.current.participants).toEqual([]);
+  });
+
+  it("快照 404：设置 session_not_found 且不建立 SSE 订阅", async () => {
+    FakeEventSource.instances = []; // 以本次测试为基准，断言未新增订阅
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 404 }));
+    const { result } = renderHook(() =>
+      useSessionEvents("s1", { fetchImpl, EventSourceImpl: FakeEventSource }),
+    );
+    await waitFor(() => expect(result.current.errorCode).toBe("session_not_found"));
+    expect(result.current.hydrated).toBe(true);
+    expect(result.current.sessionId).toBeNull();
+    expect(FakeEventSource.instances).toHaveLength(0); // 不存在的会话不订阅
   });
 });

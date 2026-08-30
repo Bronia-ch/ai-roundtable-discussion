@@ -8,7 +8,7 @@ import { InsightPanel } from "../src/components/InsightPanel";
 describe("DiscussionCard", () => {
   it("renders topic and sample tag", () => {
     render(
-      <DiscussionCard topic="人工智能与社会不平等" status="panel_ready" isSample />,
+      <DiscussionCard topic="人工智能与社会不平等" status="panel_ready" sessionId="s1" isSample />,
     );
     expect(screen.getByText("人工智能与社会不平等")).toBeInTheDocument();
     expect(screen.getByText("示例讨论")).toBeInTheDocument();
@@ -21,12 +21,12 @@ describe("DiscussionCard", () => {
     ["ready", "/studio", "已就绪"],
     ["live", "/studio", "进行中"],
     ["paused", "/studio", "已暂停"],
-    ["finalizing", "/finalizing", "生成报告中"],
+    ["finalizing", "/result", "生成报告中"],
     ["completed", "/result", "已完成"],
-    ["failed", "/failed", "错误"],
+    ["failed", "/result", "错误"],
   ] as const)("routes status %s to %s with badge %s", (status, route, badge) => {
-    render(<DiscussionCard topic="t" status={status} />);
-    expect(screen.getByTestId("card-link").getAttribute("href")).toBe(route);
+    render(<DiscussionCard topic="t" status={status} sessionId="s1" />);
+    expect(screen.getByTestId("card-link").getAttribute("href")).toBe(`#${route}?id=s1`);
     expect(screen.getByText(badge)).toBeInTheDocument();
   });
 });
@@ -79,6 +79,14 @@ describe("Transcript", () => {
     );
     expect(screen.getByText("欢迎来到圆桌讨论")).toBeInTheDocument();
     expect(screen.getByText("我认为这个观点值得商榷")).toBeInTheDocument();
+  });
+
+  it("speakerNames 映射姓名；缺省回退 speaker_id", () => {
+    const u = { id: "u1", turn_id: "t1", speaker_id: "p1", role: "host", text: "x", ordinal: 1 };
+    const { rerender } = render(<Transcript utterances={[u]} speakerNames={{ p1: "周" }} />);
+    expect(screen.getByText("周")).toBeInTheDocument();
+    rerender(<Transcript utterances={[u]} />);
+    expect(screen.getByText("p1")).toBeInTheDocument();
   });
 });
 

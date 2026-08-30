@@ -58,3 +58,24 @@ class SessionCreated(SessionItem):
 
 class SessionListOut(BaseModel):
     sessions: list[SessionItem]
+
+
+class SnapshotOut(BaseModel):
+    """GET /sessions/{id} 权威快照契约（刷新恢复）。
+
+    - participants：阵容全量（sort_order 序；与 panel.generated 事件同构——刷新后
+      PanelSetup/Studio 与事件推送结果一致；无阵容 → 空数组）。
+    - summary：完成后的最终报告 JSON 字符串（discussion_reports.raw_json；未完成/
+      无报告为 None，与 discussion.completed 事件 data.summary 同源同串）。
+    transcript/insights/participants 为文档化字典数组（字段见 app.api.snapshot）。
+    """
+
+    session_id: str
+    status: str
+    last_sequence: int
+    topic: str
+    expert_count: int
+    transcript: list[dict]
+    insights: list[dict]
+    participants: list[dict]
+    summary: str | None = None

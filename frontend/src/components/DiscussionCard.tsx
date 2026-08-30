@@ -7,9 +7,9 @@ const ROUTES: Record<SessionStatus, string> = {
   ready: "/studio",
   live: "/studio",
   paused: "/studio",
-  finalizing: "/finalizing",
+  finalizing: "/result", // 生成报告中 → 结果页展示进度
   completed: "/result",
-  failed: "/failed",
+  failed: "/result", // 失败 → 结果页展示错误
 };
 
 const BADGES: Record<SessionStatus, string> = {
@@ -27,6 +27,7 @@ const BADGES: Record<SessionStatus, string> = {
 interface DiscussionCardProps {
   topic: string;
   status: SessionStatus;
+  sessionId: string;
   isSample?: boolean;
   expertCount?: number;
 }
@@ -34,11 +35,12 @@ interface DiscussionCardProps {
 export function DiscussionCard({
   topic,
   status,
+  sessionId,
   isSample,
   expertCount = 4,
 }: DiscussionCardProps) {
   return (
-    <a href={ROUTES[status]} data-testid="card-link" className="discussion-card">
+    <a href={`#${ROUTES[status]}?id=${sessionId}`} data-testid="card-link" className="discussion-card">
       <h3 className="card-topic">{topic}</h3>
       <div className="card-meta">
         <span className="badge" data-status={status}>

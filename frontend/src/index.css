@@ -145,6 +145,7 @@ h1, h2, h3, h4 {
 .insight-section { margin-bottom: 16px; }
 .focus { margin-bottom: 16px; }
 .empty { color: var(--color-text-muted); }
+.error { color: var(--color-danger); font-size: 14px; margin: 8px 0; }
 .controls { display: flex; gap: 12px; padding-top: 16px; }
 
 /* 阵容确认 */

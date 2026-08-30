@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import itertools
 import json
 from typing import Any
@@ -109,6 +110,9 @@ async def finalize_report(
         degraded=await _read_degradation(conn, session_id),  # CG-D：会话降级记账 → 报告上下文
         event_store=event_store,
     )
+
+
+logger = logging.getLogger(__name__)
 
 
 class DiscussionEngine:
@@ -261,9 +265,11 @@ class DiscussionEngine:
                 opening_text = self._text_of(opening, "text")
             except (AuthError, SchemaError, TimeoutError, ConnectionError,
                     RateLimitError, UpstreamError):
+                logger.exception("host opening generation failed for session %s", self.session_id)
                 await self._fail_to_paused("host_opening_failed")
                 return
             except Exception:
+                logger.exception("discussion engine fatal error for session %s", self.session_id)
                 return  # FATAL：任务停止、状态保持不动（CG-B 契约）
             await self._emit("host", host_id, opening_text, 1)  # turn_id 缺省 → _emit 内创建
             count += 1

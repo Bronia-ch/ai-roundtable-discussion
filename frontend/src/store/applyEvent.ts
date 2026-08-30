@@ -5,23 +5,32 @@ export function initialState(): SessionState {
   return {
     sessionId: null,
     status: "draft",
+    hydrated: false,
     transcript: [],
     insights: [],
     participants: [],
     lastSequence: 0,
     errorCode: null,
+    topic: null,
+    expertCount: null,
+    summary: null,
   };
 }
 
 export function applySnapshot(state: SessionState, snap: Snapshot): SessionState {
   return {
     ...state,
+    hydrated: true,
     sessionId: snap.session_id,
+    errorCode: null, // 成功快照复位错误码：避免上一会话（或此前失败）的错误码残留
     status: snap.status,
     transcript: snap.transcript,
     insights: snap.insights,
-    // 快照契约暂不含阵容；清空防止 A→B 会话切换时阵容串线（刷新恢复阵容为已知契约缺口，留待扩展快照契约）
-    participants: [],
+    // 快照契约含阵容与摘要：刷新后与 panel.generated / discussion.completed 事件同构
+    participants: snap.participants,
+    topic: snap.topic,
+    expertCount: snap.expert_count,
+    summary: snap.summary,
     lastSequence: snap.last_sequence,
   };
 }
@@ -45,6 +54,26 @@ export function applyEvent(state: SessionState, ev: SSEEvent): SessionState {
     }
     case "panel.generated": {
       next.participants = [ev.data.host, ...ev.data.experts];
+      break;
+    }
+    case "participant.state_changed": {
+      const d = ev.data as { participant_id?: string; state?: string };
+      if (d.participant_id && d.state) {
+        const state = d.state; // 局部变量：闭包内保持 string 窄化（属性访问不保留窄化）
+        next.participants = next.participants.map((p) =>
+          p.id === d.participant_id ? { ...p, runtime_state: state } : p,
+        );
+      }
+      break;
+    }
+    case "panel.generation_failed": {
+      const d = ev.data as { error_code?: string };
+      if (d.error_code != null) next.errorCode = d.error_code;
+      break;
+    }
+    case "discussion.completed": {
+      const d = ev.data as { summary?: string; result_ref?: string };
+      if (typeof d.summary === "string") next.summary = d.summary;
       break;
     }
     case "utterance.completed": {

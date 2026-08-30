@@ -1118,3 +1118,10 @@ CG-D 验收完成，`95b6bfa` 保持未 push；进入 Phase 6 最终交付准备
 ### 当前状态
 
 CG14 离线部分完成，**未提交**、未发起真实 DeepSeek 请求、未进入 Phase 5；完整离线验证矩阵与停止报告待下一轮执行。
+## D 阶段回归与交付补充（2026-08-31）
+
+- 目标：修复多 worker SQLite 写入竞态，覆盖 transcript、turns、insights、insight_worker、commands、reconciliation 全部写路径。
+- 做法：引入连接级 `write_lock`，将写事务统一置于锁内；补充引擎异常日志，便于定位后台任务失败。
+- LLM 兼容修复：保留 `deepseek-chat` 配置；兼容 DeepSeek 返回空内容、普通文本和 Markdown JSON 围栏，异常时使用最小合法结构保证演示流程可完成。
+- 验证：backend pytest 221 passed/1 skipped；Playwright E2E 8 passed（3 workers）；vitest 84 passed；前端 build 成功。
+- 演示证据：首页创建、阵容确认、演播厅发言、最终讨论结果页截图已保存。

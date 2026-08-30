@@ -1,42 +1,137 @@
+import { useEffect, useState } from "react";
 import { ParticipantSeat } from "../components/ParticipantSeat";
 import { Transcript } from "../components/Transcript";
 import { InsightPanel } from "../components/InsightPanel";
-import type { Utterance, Insight } from "../types";
+import { useSessionEvents } from "../store/useSessionEvents";
+import { useStableCommand } from "../store/useCommand";
+import type { SessionEventsDeps } from "../store/useSessionEvents";
+import type { CommandPoster } from "../api/client";
 
-const SEATS = [
-  { name: "周明远", role: "host" as const, title: "资深主编", stance: "中立理性", avatarColor: "#5B8DEF", avatarEmoji: "🎙️", runtimeState: "idle" as const },
-  { name: "林晓", role: "expert" as const, title: "教授", stance: "担忧：AI 红利集中于资本方", avatarColor: "#E4572E", avatarEmoji: "📉", runtimeState: "speaking" as const },
-  { name: "陈曦", role: "expert" as const, title: "实验室主任", stance: "乐观：AI 可普惠化", avatarColor: "#2EA66E", avatarEmoji: "🤖", runtimeState: "preparing" as const },
-  { name: "王芳", role: "expert" as const, title: "副教授", stance: "警惕：数字鸿沟扩大", avatarColor: "#8E44AD", avatarEmoji: "🧭", runtimeState: "waiting" as const },
-];
+export interface StudioDeps extends SessionEventsDeps {
+  post?: CommandPoster;
+}
 
-const UTTERANCES: Utterance[] = [
-  { id: "u1", turn_id: "t1", speaker_id: "周明远", role: "host", text: "欢迎来到今天的圆桌讨论，我们聚焦人工智能与社会公平。", ordinal: 1 },
-  { id: "u2", turn_id: "t2", speaker_id: "林晓", role: "expert", text: "AI 红利明显向资本方集中，这是结构性风险。", ordinal: 2 },
-];
+export function Studio({ sessionId, deps }: { sessionId: string; deps?: StudioDeps }) {
+  const state = useSessionEvents(sessionId, deps);
+  const { run, pending } = useStableCommand(sessionId, deps?.post);
+  const [commandError, setCommandError] = useState<string | null>(null);
 
-const INSIGHTS: Insight[] = [
-  { id: "i1", kind: "consensus", text: "AI 提升整体效率", support_count: 3, oppose_count: 0, status: "active", version: 1 },
-  { id: "i2", kind: "divergence", text: "AI 是否加剧不平等", support_count: 2, oppose_count: 2, status: "active", version: 1 },
-  { id: "i3", kind: "open_question", text: "再培训体系如何落地", support_count: 0, oppose_count: 0, status: "active", version: 1 },
-];
+  // 成功快照（hydrated 且会话对齐）才视为已加载会话；失败/404 结束加载但 sessionId 仍 null → 不匹配
+  const isLoadedSession = state.hydrated && state.sessionId === sessionId;
 
-export function Studio() {
+  // 刷新一致性：先门禁，避免初始 draft 在快照返回前把 #/studio?id=… 误重定向到阵容页
+  useEffect(() => {
+    if (!isLoadedSession) return;
+    if (
+      state.status === "draft" ||
+      state.status === "panel_generating" ||
+      state.status === "panel_ready"
+    ) {
+      window.location.hash = `#/panel?id=${sessionId}`;
+    } else if (
+      state.status === "finalizing" ||
+      state.status === "completed" ||
+      state.status === "failed"
+    ) {
+      window.location.hash = `#/result?id=${sessionId}`;
+    }
+  }, [isLoadedSession, state.status, sessionId]);
+
+  // 四枚按钮各自独立门控
+  const canStart = isLoadedSession && !pending && state.status === "ready";
+  const canPause = isLoadedSession && !pending && state.status === "live";
+  const canResume = isLoadedSession && !pending && state.status === "paused";
+  const canEnd =
+    isLoadedSession && !pending && (state.status === "live" || state.status === "paused");
+
+  // handler 早退：isLoadedSession/pending 之外，还各自校验状态（绕过 disabled 的调用路径也不发命令）
+  const handleStart = async () => {
+    if (!isLoadedSession || pending || state.status !== "ready") return;
+    setCommandError(null);
+    if (!(await run("discussion/start"))) setCommandError("开始失败，请重试");
+  };
+  const handlePause = async () => {
+    if (!isLoadedSession || pending || state.status !== "live") return;
+    setCommandError(null);
+    if (!(await run("discussion/pause"))) setCommandError("暂停失败，请重试");
+  };
+  const handleResume = async () => {
+    if (!isLoadedSession || pending || state.status !== "paused") return;
+    setCommandError(null);
+    if (!(await run("discussion/resume"))) setCommandError("继续失败，请重试");
+  };
+  const handleEnd = async () => {
+    if (!isLoadedSession || pending || (state.status !== "live" && state.status !== "paused"))
+      return;
+    setCommandError(null);
+    if (!(await run("discussion/end"))) setCommandError("结束失败，请重试");
+  };
+
+  // 单一错误展示：后端错误码优先，其次本地命令错误
+  const errorText = state.errorCode ?? commandError;
+
+  // 发言席 speaker_id → 姓名（Transcript 展示用）
+  const speakerNames: Record<string, string> = {};
+  for (const p of state.participants) speakerNames[p.id] = p.name;
+
   return (
     <div className="page studio">
+      {errorText && (
+        <p className="error" data-testid="studio-error">
+          {errorText}
+        </p>
+      )}
       <div className="seats">
-        {SEATS.map((s) => (
-          <ParticipantSeat key={s.name} {...s} />
+        {state.participants.map((p) => (
+          <ParticipantSeat
+            key={p.id}
+            name={p.name}
+            role={p.role}
+            title={p.title}
+            stance={p.stance}
+            avatarColor={p.avatar_color}
+            avatarEmoji={p.avatar_emoji}
+            runtimeState={p.runtime_state}
+          />
         ))}
       </div>
       <div className="studio-body">
-        <Transcript utterances={UTTERANCES} />
-        <InsightPanel focus="AI 是否加剧社会不平等" insights={INSIGHTS} />
+        <Transcript utterances={state.transcript} speakerNames={speakerNames} />
+        <InsightPanel focus={state.topic ?? ""} insights={state.insights} />
       </div>
       <div className="controls">
-        <button className="btn btn-primary">开始讨论</button>
-        <button className="btn">暂停</button>
-        <button className="btn btn-danger">结束讨论</button>
+        <button
+          className="btn btn-primary"
+          onClick={() => void handleStart()}
+          disabled={!canStart}
+          data-testid="start-btn"
+        >
+          开始讨论
+        </button>
+        <button
+          className="btn"
+          onClick={() => void handlePause()}
+          disabled={!canPause}
+          data-testid="pause-btn"
+        >
+          暂停
+        </button>
+        <button
+          className="btn"
+          onClick={() => void handleResume()}
+          disabled={!canResume}
+          data-testid="resume-btn"
+        >
+          继续
+        </button>
+        <button
+          className="btn btn-danger"
+          onClick={() => void handleEnd()}
+          disabled={!canEnd}
+          data-testid="end-btn"
+        >
+          结束讨论
+        </button>
       </div>
     </div>
   );

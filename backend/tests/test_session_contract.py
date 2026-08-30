@@ -18,7 +18,9 @@ import httpx
 import pytest
 
 from app import main
+from app.core.engine_registry import EngineRegistry
 from app.core.event_store import EventStore
+from app.llm.fake import FakeLLMProvider
 
 # 命令 → 合法状态（按 state_machine.TRANSITIONS 推导）
 VALID_STATES = [
@@ -43,9 +45,12 @@ ALL_PATHS = [p for p, _ in VALID_STATES] + ["retry"]
 
 
 async def _mount(conn):
-    """把测试连接挂到共享 app 上（等价于生产 lifespan 的装配）。"""
+    """把测试连接挂到共享 app 上（等价于生产 lifespan 的装配）；返回 registry 供调用方收尾。"""
     main.app.state.conn = conn
     main.app.state.event_store = EventStore(conn)
+    main.app.state.engine_registry = EngineRegistry()
+    main.app.state.llm = FakeLLMProvider()  # discussion/start 启动引擎需要 llm
+    return main.app.state.engine_registry
 
 
 async def _seed(conn, sid, status="draft", topic="t", expert_count=4, created_at=None):
@@ -241,21 +246,27 @@ async def test_get_sessions_stable_ordering_by_created_at(conn):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path,valid_state", VALID_STATES)
 async def test_command_202_in_valid_state(conn, path, valid_state):
-    await _mount(conn)
-    await _seed(conn, "s1", status=valid_state)
-    async with await _client() as c:
-        r = await c.post(f"/sessions/s1/{path}", json={"command_id": "cmd-1"})
-    assert r.status_code == 202
+    registry = await _mount(conn)  # start/end 会真启动引擎 task，须在同 loop 内收尾
+    try:
+        await _seed(conn, "s1", status=valid_state)
+        async with await _client() as c:
+            r = await c.post(f"/sessions/s1/{path}", json={"command_id": "cmd-1"})
+        assert r.status_code == 202
+    finally:
+        await registry.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_command_end_202_from_paused(conn):
     """discussion/end 在 live 与 paused 均合法（TRANSITIONS[PAUSED] 含 FINALIZING）。"""
-    await _mount(conn)
-    await _seed(conn, "s1", status="paused")
-    async with await _client() as c:
-        r = await c.post("/sessions/s1/discussion/end", json={"command_id": "cmd-1"})
-    assert r.status_code == 202
+    registry = await _mount(conn)
+    try:
+        await _seed(conn, "s1", status="paused")
+        async with await _client() as c:
+            r = await c.post("/sessions/s1/discussion/end", json={"command_id": "cmd-1"})
+        assert r.status_code == 202
+    finally:
+        await registry.shutdown()
 
 
 @pytest.mark.asyncio
@@ -324,13 +335,16 @@ async def test_command_empty_command_id_422(conn, path):
 @pytest.mark.asyncio
 async def test_duplicate_command_id_idempotent(conn):
     """重复 command_id：返回第一次的原结果（202），不产生第二条 receipt。"""
-    await _mount(conn)
-    await _seed(conn, "s1", status="ready")
-    async with await _client() as c:
-        first = await c.post("/sessions/s1/discussion/start", json={"command_id": "cmd-dup"})
-        second = await c.post("/sessions/s1/discussion/start", json={"command_id": "cmd-dup"})
-    assert first.status_code == 202
-    assert second.status_code == 202
+    registry = await _mount(conn)  # start 会真启动引擎 task，须在同 loop 内收尾
+    try:
+        await _seed(conn, "s1", status="ready")
+        async with await _client() as c:
+            first = await c.post("/sessions/s1/discussion/start", json={"command_id": "cmd-dup"})
+            second = await c.post("/sessions/s1/discussion/start", json={"command_id": "cmd-dup"})
+        assert first.status_code == 202
+        assert second.status_code == 202
+    finally:
+        await registry.shutdown()
     rows = await (
         await conn.execute(
             "SELECT COUNT(*) FROM command_receipts WHERE session_id='s1' AND command_id='cmd-dup'"

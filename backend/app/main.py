@@ -9,6 +9,7 @@ from .api import routes
 from .config import Settings
 from .core.engine_registry import EngineRegistry
 from .core.event_store import EventStore
+from .llm.fake import FakeLLMProvider
 from .llm.openai_compat import OpenAICompatProvider
 
 @asynccontextmanager
@@ -21,7 +22,10 @@ async def lifespan(app: FastAPI):
     await db.init_db(conn)
     app.state.conn = conn
     app.state.event_store = EventStore(conn)  # 进程共享：SSE 订阅按 session_id 分桶
-    app.state.llm = OpenAICompatProvider(settings)  # LLM 注入点：测试以替身覆盖（见 test_panel._mount）
+    if settings.llm_fake:
+        app.state.llm = FakeLLMProvider(settings)  # LLM_FAKE=1：离线替身（E2E/演示）
+    else:
+        app.state.llm = OpenAICompatProvider(settings)  # LLM 注入点：测试以替身覆盖（见 test_panel._mount）
     app.state.engine_registry = EngineRegistry()  # 引擎/task 登记：start 接线 + 停机确定性收尾
     try:
         yield

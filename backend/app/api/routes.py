@@ -10,6 +10,7 @@ from app.api.schemas import (
     CreateSessionRequest,
     SessionCreated,
     SessionListOut,
+    SnapshotOut,
 )
 from app.api.snapshot import get_session_snapshot
 from app.api.sse import resolve_after_seq, sse_stream
@@ -133,6 +134,16 @@ async def _launch_engine(request: Request, id: str) -> None:
 
     engine = await registry.get_or_create(id, _make_engine)
     task = asyncio.create_task(engine.start())
+    def _report_failure(done: asyncio.Task) -> None:
+        if done.cancelled():
+            return
+        error = done.exception()
+        if error is not None:
+            import logging
+            logging.getLogger(__name__).exception(
+                "discussion engine crashed for session %s", id, exc_info=error
+            )
+    task.add_done_callback(_report_failure)
     if not await registry.track(id, task):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -235,7 +246,7 @@ async def retry(id: str, body: CommandRequest, request: Request):
                 await asyncio.gather(task, return_exceptions=True)
 
 
-@router.get("/sessions/{id}")
+@router.get("/sessions/{id}", response_model=SnapshotOut)
 async def snapshot(id: str, request: Request):
     conn = request.app.state.conn
     snap = await get_session_snapshot(conn, id)

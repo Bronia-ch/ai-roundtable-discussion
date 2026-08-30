@@ -217,7 +217,7 @@ async def test_commit_report_idempotent_and_clears_error_triple(conn):
     seq = await transactions.commit_report(
         conn, "s1", {"summary": "讨论完成"}, '{"summary": "讨论完成"}', None
     )
-    assert seq == 1
+    assert seq == 2  # 事件对：state_changed(completed) + discussion.completed
     assert await _status(conn) == "completed"
     err, retry_op = (
         await (await conn.execute(
@@ -227,6 +227,17 @@ async def test_commit_report_idempotent_and_clears_error_triple(conn):
     assert err is None, "重试成功的报告必须清空 error_code"
     assert retry_op is None, "重试成功的报告必须清空 retry_operation"
     assert await _report_summary(conn) == "讨论完成"
+    # A 阶段契约扩展：discussion.completed 事件携带摘要载荷（data.summary = raw_json）
+    completed = await (
+        await conn.execute(
+            "SELECT payload FROM events WHERE session_id='s1' "
+            "AND event_type='discussion.completed' ORDER BY sequence DESC"
+        )
+    ).fetchone()
+    assert completed is not None, "completed 迁移必须伴随 discussion.completed 摘要事件"
+    completed_payload = json.loads(completed[0])
+    assert completed_payload["summary"] == '{"summary": "讨论完成"}'
+    assert isinstance(completed_payload["result_ref"], str)
     dup = await transactions.commit_report(
         conn, "s1", {"summary": "讨论完成"}, '{"summary": "讨论完成"}', None
     )

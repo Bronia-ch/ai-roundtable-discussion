@@ -50,14 +50,16 @@ class CommandOutcome(str, Enum):
 _FALLBACK_LOCK: asyncio.Lock | None = None
 
 
-def _write_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
-    """连接级最小写锁：BEGIN IMMEDIATE → COMMIT/ROLLBACK 完整区间串行化。
+def write_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
+    """连接级写锁：BEGIN IMMEDIATE → COMMIT/ROLLBACK 完整区间串行化。
 
     惰性挂载到连接对象（首次调用创建；无 await，并发首调用不会双创建）。
     共享同一连接的协程若同时 BEGIN IMMEDIATE，SQL 会交错进入同一事务或抛
     "cannot start a transaction within a transaction"；锁保证单连接上完整写事务
-    不可交错。测试连接（conftest fixture）首次调用自动获得同一把锁，
-    不依赖 lifespan 装配。
+    不可交错。单连接模型下**所有**写路径（transactions / transcript / turns /
+    insights / insight_worker / commands）必须共用此锁——任何锁外写（隐式事务）
+    都会与锁内 BEGIN IMMEDIATE 冲突。测试连接（conftest fixture）首次调用
+    自动获得同一把锁，不依赖 lifespan 装配。
     """
     lock = getattr(conn, "_ai_write_lock", None)
     if lock is None:
@@ -85,7 +87,7 @@ async def commit_event(
     任一写失败整体回滚。LLM/网络调用绝不可在本事务内发生。
     event_store 注入点（G3）：提交后以本地精确 seq 广播（回滚边界外，失败不回滚已提交事务）。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:
@@ -136,7 +138,7 @@ async def create_session(
     创建事件为 session.state_changed，data.state = draft。
     event_store 注入点（G3）：提交后以本地精确 seq 广播 draft 创建事件。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:
@@ -197,7 +199,7 @@ async def execute_command(
     - 任何 SQL/写入异常：整体 ROLLBACK 后继续传播（HTTP 层形成 500），
       不得把数据库失败伪装成 202。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:
@@ -296,7 +298,7 @@ async def recover_soft_cap(
     不迁移状态（live 由 resume 命令事务写入）、不做事件/seq（恢复语义不产生事件）。
     返回 True 表示本次恢复了软上限。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:
@@ -345,25 +347,47 @@ async def commit_panel(
     - error_code None 写 SQL NULL（清空失败标记）；非 None 记录失败原因。
     - 状态为无条件 UPDATE：panel_generating 下无合法并发命令（TRANSITIONS 无出边且
       panel/generate 在 panel_generating 下 CONFLICT），命令门禁已封死并发面。
+    - 事件契约：成功路径写事件对——seq N panel.generated（阵容载荷，data.host/experts
+      与快照 participants 同构），seq N+1 session.state_changed（状态信号）；
+      失败路径单条 state_changed，payload 携带 error_code（与 commit_report 同构，
+      前端 applyEvent 按 ev.data.error_code 呈现后端错误码）。
     LLM/网络调用绝不可在本事务内发生（调用方在事务外完成生成与校验）。
     event_store 注入点（G3）：提交后以本地精确 seq 广播（回滚边界外，失败不回滚已提交事务）。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:
+            panel = None
             if participants is not None:
                 await conn.execute(
                     "DELETE FROM participants WHERE session_id = ?", (session_id,)
                 )
+                panel = []
                 for p in participants:
+                    pid = uuid.uuid4().hex
                     role, name, profession, title, stance, avatar_color, avatar_emoji, sort_order = p
+                    panel.append(
+                        {
+                            "id": pid,
+                            "session_id": session_id,
+                            "role": role,
+                            "name": name,
+                            "profession": profession,
+                            "title": title,
+                            "stance": stance,
+                            "avatar_color": avatar_color,
+                            "avatar_emoji": avatar_emoji,
+                            "runtime_state": None,
+                            "public_focus": None,
+                        }
+                    )
                     await conn.execute(
                         "INSERT INTO participants (id, session_id, role, name, profession, title, "
                         "stance, avatar_color, avatar_emoji, sort_order) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
-                            uuid.uuid4().hex,
+                            pid,
                             session_id,
                             role,
                             name,
@@ -387,18 +411,39 @@ async def commit_panel(
                 )
             ).fetchone()
             seq = row[0]
+            if panel is not None:
+                # seq N：panel.generated 阵容载荷（与快照 participants 同构）
+                await conn.execute(
+                    "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                    "VALUES (?, ?, 'panel.generated', 1, ?)",
+                    (
+                        session_id, seq,
+                        json.dumps({"host": panel[0], "experts": panel[1:]}, ensure_ascii=False),
+                    ),
+                )
+                await conn.execute(
+                    "UPDATE sessions SET last_event_sequence = last_event_sequence + 1 WHERE id = ?",
+                    (session_id,),
+                )
+                seq2 = seq + 1
+            # seq N（失败路径）/ seq N+1（成功路径）：状态信号，payload 携带 error_code
             await conn.execute(
                 "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
                 "VALUES (?, ?, 'session.state_changed', 1, ?)",
-                (session_id, seq, json.dumps({"state": state}, ensure_ascii=False)),
+                (session_id, seq2 if panel is not None else seq,
+                 json.dumps({"state": state, "error_code": error_code}, ensure_ascii=False)),
             )
             await conn.commit()
         except Exception:
             await conn.rollback()
             raise
         if event_store is not None:
-            await event_store.publish(conn, session_id, seq)
-        return seq
+            if panel is not None:
+                await event_store.publish(conn, session_id, seq)      # 阵容载荷（先）
+                await event_store.publish(conn, session_id, seq + 1)  # 状态信号（后）
+            else:
+                await event_store.publish(conn, session_id, seq)
+        return seq + 1 if panel is not None else seq
 
 
 async def commit_report(
@@ -417,9 +462,12 @@ async def commit_report(
       不得留下新 report 行，返回 None（绝不把非 finalizing 会话标成 completed）。
     - 成功路径清空 error_code/retry_operation：重试成功的报告不带残留失败标记。
     - 报告行与 completed 迁移同生共死：绝不出现"报告已持久化但状态未完成"。
+    - 事件对（同一事务）：seq N 写 session.state_changed(completed)（状态信号）；
+      seq N+1 写 discussion.completed（摘要载荷，data.summary 与快照 summary 同源同串，
+      均为 report raw_json）。last_event_sequence 与最新事件同值，返回最终 seq（幂等重放 0）。
     - LLM/网络调用绝不可在本事务内发生。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:
@@ -428,6 +476,7 @@ async def commit_report(
             divergence = report.get("main_divergence")
             unresolved = report.get("unresolved_questions")
             actions = report.get("suggested_actions")
+            report_id = uuid.uuid4().hex
             cur = await conn.execute(
                 "INSERT OR IGNORE INTO discussion_reports "
                 "(id, session_id, summary, key_consensus, main_divergence, unresolved_questions, "
@@ -436,7 +485,7 @@ async def commit_report(
                 " report_generated_with_degraded_context) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    uuid.uuid4().hex, session_id,
+                    report_id, session_id,
                     report["summary"],
                     json.dumps(consensus, ensure_ascii=False) if consensus is not None else None,
                     json.dumps(divergence, ensure_ascii=False) if divergence is not None else None,
@@ -467,19 +516,35 @@ async def commit_report(
                     "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
                 )
             ).fetchone()
-            seq = row[0]
+            seq = row[0]  # seq N：session.state_changed(completed) 状态信号
             await conn.execute(
                 "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
                 "VALUES (?, ?, 'session.state_changed', 1, ?)",
                 (session_id, seq, json.dumps({"state": "completed"}, ensure_ascii=False)),
+            )
+            # seq N+1：discussion.completed 摘要载荷（data.summary = report raw_json，
+            # 与快照 summary 同源同串；result_ref = 报告行 id）
+            await conn.execute(
+                "UPDATE sessions SET last_event_sequence = last_event_sequence + 1 WHERE id = ?",
+                (session_id,),
+            )
+            seq2 = seq + 1
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'discussion.completed', 1, ?)",
+                (
+                    session_id, seq2,
+                    json.dumps({"summary": raw_json, "result_ref": report_id}, ensure_ascii=False),
+                ),
             )
             await conn.commit()
         except Exception:
             await conn.rollback()
             raise
         if event_store is not None:
-            await event_store.publish(conn, session_id, seq)
-        return seq
+            await event_store.publish(conn, session_id, seq)   # 状态信号（先）
+            await event_store.publish(conn, session_id, seq2)  # 摘要载荷（后）
+        return seq2
 
 
 async def mark_report_failed(
@@ -495,7 +560,7 @@ async def mark_report_failed(
     - 状态原地不动（滞留语义）；重试由 retry 命令 + retry_operation='report' 驱动。
     - LLM/网络调用绝不可在本事务内发生。
     """
-    lock = _write_lock(conn)
+    lock = write_lock(conn)
     async with lock:
         await conn.execute("BEGIN IMMEDIATE")
         try:

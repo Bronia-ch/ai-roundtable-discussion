@@ -174,6 +174,9 @@ async def test_snapshot_route_returns_state_and_last_sequence(conn):
     assert body["last_sequence"] == 1
     assert body["transcript"] == []
     assert body["insights"] == []
+    # 刷新恢复契约（A 阶段扩展）：阵容/摘要字段始终存在
+    assert body["participants"] == []
+    assert body["summary"] is None
 
 
 @pytest.mark.asyncio

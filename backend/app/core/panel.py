@@ -43,8 +43,11 @@ def _validate_panel(resp: Any, expert_count: int) -> tuple[dict, list[dict]]:
     """
     if not isinstance(resp, dict):
         raise SchemaError("阵容响应不是对象")
-    host = resp.get("host")
-    experts = resp.get("experts")
+    # 兼容 OpenAI 提示词约定的外层 {"panel": {...}}，以及测试/FakeLLM
+    # 使用的直接 {"host": ..., "experts": [...]} 形状。
+    panel = resp.get("panel") if isinstance(resp.get("panel"), dict) else resp
+    host = panel.get("host")
+    experts = panel.get("experts")
     _validate_person(host)
     if not isinstance(experts, list):
         raise SchemaError("experts 不是数组")

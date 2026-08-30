@@ -1,6 +1,4 @@
-type RuntimeState = "waiting" | "preparing" | "speaking" | "idle";
-
-const STATE_LABELS: Record<RuntimeState, string> = {
+const STATE_LABELS: Record<string, string> = {
   waiting: "等待",
   preparing: "准备",
   speaking: "发言",
@@ -14,7 +12,8 @@ interface ParticipantSeatProps {
   stance: string;
   avatarColor: string;
   avatarEmoji: string;
-  runtimeState: RuntimeState;
+  /** 后端 runtime_state 值域；未知值回退「等待」。 */
+  runtimeState: string;
 }
 
 export function ParticipantSeat({
@@ -41,7 +40,7 @@ export function ParticipantSeat({
         <div className="seat-stance">{stance}</div>
         <div className="state-label">
           <span className="state-dot" aria-hidden="true" />
-          {STATE_LABELS[runtimeState]}
+          {STATE_LABELS[runtimeState] ?? "等待"}
         </div>
       </div>
     </div>

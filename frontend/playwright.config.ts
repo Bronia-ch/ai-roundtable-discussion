@@ -19,9 +19,10 @@ export default defineConfig({
       timeout: 60000,
       reuseExistingServer: false, // 8000 被占用必须明确失败，不复用来源不明的后端
       env: {
-        LLM_SQLITE_PATH: ":memory:", // 不写入 ./data/app.db
+        LLM_SQLITE_PATH: ":memory:", // 独立 E2E SQLite：不写入开发库 ./data/app.db
         SMOKE_REAL_LLM: "0",
-        // 本机无服务地址：即使误触 LLM 路径也只能本机失败，绝不请求真实 DeepSeek
+        LLM_FAKE: "1", // 离线 FakeLLMProvider：全流程不依赖真实 LLM
+        // 双保险：即使误触 LLM 路径也只能本机失败，绝不请求真实 DeepSeek
         LLM_BASE_URL: "http://127.0.0.1:9/v1",
         LLM_API_KEY: "",
         LLM_MODEL: "e2e-no-network",
