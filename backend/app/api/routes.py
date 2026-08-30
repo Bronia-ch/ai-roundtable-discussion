@@ -14,6 +14,7 @@ from app.api.snapshot import get_session_snapshot
 from app.api.sse import resolve_after_seq, sse_stream
 from app.core import transactions
 from app.core.transactions import CommandOutcome
+from app.core import panel as panel_ops  # panel/generate 执行体（LLM 生成 + 原子回写）
 
 router = APIRouter()
 
@@ -69,13 +70,12 @@ async def list_sessions(request: Request):
 
 async def _apply_command(
     conn, session_id: str, command_type: str, command_id: str
-) -> None:
+) -> CommandOutcome:
     """命令共用路径：单一原子事务（receipt/状态/事件同生共死），路由层只做结果映射。
 
     NOT_FOUND → 404；UNKNOWN_COMMAND / CONFLICT → 409；DUPLICATE / APPLIED → 202。
     幂等命中发生在事务内部（重复 command_id 返回第一次接受的 202，不重复副作用）。
-    T0.1 边界：命令的真实行为 = 状态机契约要求的状态变更与事件写入；
-    领域执行体（阵容 LLM 生成、讨论引擎循环、finalizing 报告）属 T1/T5，另行接线。
+    返回值供 panel/generate 区分 APPLIED（触发执行体）与 DUPLICATE（幂等重放，不重复副作用）。
     """
     outcome = await transactions.execute_command(conn, session_id, command_type, command_id)
     if outcome is CommandOutcome.NOT_FOUND:
@@ -84,12 +84,24 @@ async def _apply_command(
         raise HTTPException(status_code=409, detail="unknown retry operation")
     if outcome is CommandOutcome.CONFLICT:
         raise HTTPException(status_code=409, detail="invalid state transition")
-    # DUPLICATE / APPLIED → 202（幂等重放或首次应用）
+    # DUPLICATE / APPLIED → 202（幂等重放或首次应用）；返回 outcome 供调用方判断
+    return outcome
 
 
 @router.post("/sessions/{id}/panel/generate", status_code=202)
 async def panel_generate(id: str, body: CommandRequest, request: Request):
-    await _apply_command(request.app.state.conn, id, "panel/generate", body.command_id)
+    """阵容生成命令：命令事务（draft/panel_ready → panel_generating）后同步执行阵容生成。
+
+    执行体（panel_ops.generate）在命令事务之外调用 LLM 并原子回写：
+    成功 → panel_ready + 阵容落库 + error_code 清空；
+    失败 → draft（无旧阵容）/ panel_ready（保留旧阵容）+ error_code。
+    幂等重放（DUPLICATE）不触发执行体：副作用只发生一次，202 语义不变。
+    """
+    outcome = await _apply_command(
+        request.app.state.conn, id, "panel/generate", body.command_id
+    )
+    if outcome is CommandOutcome.APPLIED:
+        await panel_ops.generate(request.app.state.conn, request.app.state.llm, id)
 
 
 @router.post("/sessions/{id}/panel/confirm", status_code=202)

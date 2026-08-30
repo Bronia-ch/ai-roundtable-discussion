@@ -8,6 +8,7 @@ from . import db
 from .api import routes
 from .config import Settings
 from .core.event_store import EventStore
+from .llm.openai_compat import OpenAICompatProvider
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     await db.init_db(conn)
     app.state.conn = conn
     app.state.event_store = EventStore(conn)  # 进程共享：SSE 订阅按 session_id 分桶
+    app.state.llm = OpenAICompatProvider(settings)  # LLM 注入点：测试以替身覆盖（见 test_panel._mount）
     try:
         yield
     finally:

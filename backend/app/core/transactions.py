@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from enum import Enum
 from typing import Any
 
@@ -239,6 +240,73 @@ async def execute_command(
             )
             await conn.commit()
             return CommandOutcome.APPLIED
+        except Exception:
+            await conn.rollback()
+            raise
+
+
+async def commit_panel(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    participants: list[tuple] | None,
+    state: str,
+    error_code: str | None,
+) -> int:
+    """panel/generate 执行体回写：可选替换 participants + 状态/error_code + sequence + 事件，单事务原子。
+
+    - participants 非 None：DELETE 旧阵容 + INSERT 新阵容（同事务；首次生成 DELETE 影响 0 行，
+      re-roll 成功时替换旧阵容）；None：不触碰 participants（失败回退路径，旧阵容原样保留）。
+    - error_code None 写 SQL NULL（清空失败标记）；非 None 记录失败原因。
+    - 状态为无条件 UPDATE：panel_generating 下无合法并发命令（TRANSITIONS 无出边且
+      panel/generate 在 panel_generating 下 CONFLICT），命令门禁已封死并发面。
+    LLM/网络调用绝不可在本事务内发生（调用方在事务外完成生成与校验）。
+    """
+    lock = _write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            if participants is not None:
+                await conn.execute(
+                    "DELETE FROM participants WHERE session_id = ?", (session_id,)
+                )
+                for p in participants:
+                    role, name, profession, title, stance, avatar_color, avatar_emoji, sort_order = p
+                    await conn.execute(
+                        "INSERT INTO participants (id, session_id, role, name, profession, title, "
+                        "stance, avatar_color, avatar_emoji, sort_order) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            uuid.uuid4().hex,
+                            session_id,
+                            role,
+                            name,
+                            profession,
+                            title,
+                            stance,
+                            avatar_color,
+                            avatar_emoji,
+                            sort_order,
+                        ),
+                    )
+            await conn.execute(
+                "UPDATE sessions SET status = ?, error_code = ?, "
+                "last_event_sequence = last_event_sequence + 1, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (state, error_code, session_id),
+            )
+            row = await (
+                await conn.execute(
+                    "SELECT last_event_sequence FROM sessions WHERE id = ?", (session_id,)
+                )
+            ).fetchone()
+            seq = row[0]
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'session.state_changed', 1, ?)",
+                (session_id, seq, json.dumps({"state": state}, ensure_ascii=False)),
+            )
+            await conn.commit()
+            return seq
         except Exception:
             await conn.rollback()
             raise
