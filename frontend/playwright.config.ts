@@ -1,12 +1,15 @@
 import { defineConfig } from "@playwright/test";
 
+const backendPort = 8010;
+const frontendPort = 5180;
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30000,
   use: {
     browserName: "chromium",
     channel: "msedge",
-    baseURL: "http://localhost:5173",
+    baseURL: `http://localhost:${frontendPort}`,
   },
   webServer: [
     // 后端：项目虚拟环境解释器 + uvicorn（内存 SQLite，每次 E2E 全新库）
@@ -14,8 +17,8 @@ export default defineConfig({
       // cmd.exe 无法解析以 ".." + 正斜杠开头的命令路径（会把 ".." 当作命令名），
       // venv 解释器必须用 Windows 反斜杠；uvicorn 参数（--app-dir）由 python 处理，正斜杠兼容
       command:
-        "..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir ../backend --host 127.0.0.1 --port 8000",
-      url: "http://127.0.0.1:8000/healthz",
+        `..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir ../backend --host 127.0.0.1 --port ${backendPort}`,
+      url: `http://127.0.0.1:${backendPort}/healthz`,
       timeout: 60000,
       reuseExistingServer: false, // 8000 被占用必须明确失败，不复用来源不明的后端
       env: {
@@ -30,10 +33,13 @@ export default defineConfig({
     },
     // 前端：保留原有 npm run dev 行为
     {
-      command: "npm run dev",
-      url: "http://localhost:5173",
-      reuseExistingServer: true,
+      command: `npm run dev -- --port ${frontendPort} --strictPort`,
+      url: `http://localhost:${frontendPort}`,
+      reuseExistingServer: false,
       timeout: 60000,
+      env: {
+        VITE_API_TARGET: `http://127.0.0.1:${backendPort}`,
+      },
     },
   ],
 });

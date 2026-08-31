@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { DiscussionCard } from "../components/DiscussionCard";
-import { createSession, listSessions } from "../api/client";
-import type { JsonPoster, SessionItem, SnapshotLoader } from "../api/client";
+import { createSession, deleteSession, listSessions } from "../api/client";
+import type { JsonPoster, SessionDeleter, SessionItem, SnapshotLoader } from "../api/client";
 import type { SessionStatus } from "../types";
 
 export interface HomeDeps {
   /** 测试注入替身；缺省走真实 fetch。 */
   load?: SnapshotLoader;
   post?: JsonPoster;
+  remove?: SessionDeleter;
 }
 
 export function Home({ deps }: { deps?: HomeDeps }) {
@@ -17,6 +18,8 @@ export function Home({ deps }: { deps?: HomeDeps }) {
   const [expertCount, setExpertCount] = useState(4);
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +54,20 @@ export function Home({ deps }: { deps?: HomeDeps }) {
       setFormError("创建失败，请重试");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDelete = async (sessionId: string) => {
+    if (deletingId) return;
+    setDeletingId(sessionId);
+    setDeleteError(null);
+    try {
+      await deleteSession(sessionId, deps?.remove);
+      setSessions((current) => current?.filter((item) => item.session_id !== sessionId) ?? []);
+    } catch {
+      setDeleteError("删除失败，请稍后重试");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -102,6 +119,7 @@ export function Home({ deps }: { deps?: HomeDeps }) {
           {formError}
         </p>
       )}
+      {deleteError && <p className="error" data-testid="delete-error">{deleteError}</p>}
       {loadError ? (
         <p className="error" data-testid="load-error">
           {loadError}
@@ -119,6 +137,8 @@ export function Home({ deps }: { deps?: HomeDeps }) {
               status={s.status as SessionStatus}
               sessionId={s.session_id}
               expertCount={s.expert_count}
+              deleting={deletingId === s.session_id}
+              onDelete={() => handleDelete(s.session_id)}
             />
           ))}
         </div></section>

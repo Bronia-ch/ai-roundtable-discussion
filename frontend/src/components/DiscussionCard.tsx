@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { SessionStatus } from "../types";
 
 const ROUTES: Record<SessionStatus, string> = {
@@ -30,6 +31,8 @@ interface DiscussionCardProps {
   sessionId: string;
   isSample?: boolean;
   expertCount?: number;
+  deleting?: boolean;
+  onDelete?: () => void | Promise<void>;
 }
 
 export function DiscussionCard({
@@ -38,17 +41,37 @@ export function DiscussionCard({
   sessionId,
   isSample,
   expertCount = 4,
+  deleting = false,
+  onDelete,
 }: DiscussionCardProps) {
+  const [confirming, setConfirming] = useState(false);
   return (
-    <a href={`#${ROUTES[status]}?id=${sessionId}`} data-testid="card-link" className="discussion-card">
-      <h3 className="card-topic">{topic}</h3>
-      <div className="card-meta">
-        <span className="badge" data-status={status}>
-          {BADGES[status]}
-        </span>
-        {isSample && <span className="sample-tag">示例讨论</span>}
-        <span className="expert-count">{expertCount} 位专家</span>
-      </div>
-    </a>
+    <article className="discussion-card">
+      <a href={`#${ROUTES[status]}?id=${sessionId}`} data-testid="card-link" className="discussion-card-link">
+        <h3 className="card-topic">{topic}</h3>
+        <div className="card-meta">
+          <span className="badge" data-status={status}>
+            {BADGES[status]}
+          </span>
+          {isSample && <span className="sample-tag">示例讨论</span>}
+          <span className="expert-count">{expertCount} 位专家</span>
+        </div>
+      </a>
+      {onDelete && (
+        <div className="card-actions">
+          {confirming ? (
+            <>
+              <span>确定删除？</span>
+              <button className="card-action danger" disabled={deleting} onClick={() => void onDelete()} data-testid={`confirm-delete-${sessionId}`}>
+                {deleting ? "删除中…" : "确定"}
+              </button>
+              <button className="card-action" disabled={deleting} onClick={() => setConfirming(false)}>取消</button>
+            </>
+          ) : (
+            <button className="card-action danger" onClick={() => setConfirming(true)} aria-label={`删除讨论：${topic}`} data-testid={`delete-${sessionId}`}>删除</button>
+          )}
+        </div>
+      )}
+    </article>
   );
 }

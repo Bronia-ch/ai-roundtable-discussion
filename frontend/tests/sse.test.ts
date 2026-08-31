@@ -3,7 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { applyEvent, applySnapshot, initialState } from "../src/store/applyEvent";
 import { connectEvents } from "../src/api/sse";
-import { createSession, listSessions, postCommand } from "../src/api/client";
+import { createSession, deleteSession, listSessions, postCommand } from "../src/api/client";
 import { useSessionEvents } from "../src/store/useSessionEvents";
 import type { SSEEvent } from "../src/types";
 import type { Snapshot } from "../src/store/types";
@@ -301,6 +301,17 @@ describe("listSessions", () => {
   it("非 2xx 抛错", async () => {
     const load = vi.fn(async () => ({ ok: false, status: 500 }));
     await expect(listSessions(load)).rejects.toThrow("500");
+  });
+});
+
+describe("deleteSession", () => {
+  it("DELETE /sessions/{id} 成功时完成，非 2xx 抛错", async () => {
+    const remove = vi.fn(async () => ({ ok: true, status: 204 }));
+    await deleteSession("s1", remove);
+    expect(remove).toHaveBeenCalledWith("/sessions/s1", { method: "DELETE" });
+
+    const failed = vi.fn(async () => ({ ok: false, status: 500 }));
+    await expect(deleteSession("s1", failed)).rejects.toThrow("500");
   });
 });
 

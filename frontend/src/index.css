@@ -83,15 +83,20 @@ h1, h2, h3, h4 {
   gap: 16px;
 }
 .discussion-card {
-  display: block;
-  padding: 16px;
+  position: relative;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 12px;
-  text-decoration: none;
   color: var(--color-text);
+  overflow: hidden;
 }
 .discussion-card:hover { border-color: #4b74aa; transform: translateY(-2px); box-shadow: 0 12px 30px rgba(0,0,0,.22); }
+.discussion-card-link { display: block; padding: 16px 80px 16px 16px; color: inherit; text-decoration: none; }
+.card-actions { position: absolute; top: 12px; right: 12px; display: flex; align-items: center; gap: 7px; color: var(--color-text-muted); font-size: 12px; }
+.card-action { padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-muted); cursor: pointer; }
+.card-action:hover:not(:disabled), .card-action:focus-visible { background: var(--color-surface-raised); color: var(--color-text); }
+.card-action.danger:hover:not(:disabled), .card-action.danger:focus-visible { background: rgba(239,68,68,.14); color: #ff8d8d; }
+.card-action:disabled { cursor: wait; opacity: .55; }
 .section-heading, .panel-heading { display: flex; align-items: center; justify-content: space-between; color: var(--color-text-muted); }
 .section-heading { margin: 34px 0 14px; }
 .section-heading h2 { color: var(--color-text); }
@@ -173,8 +178,11 @@ h1, h2, h3, h4 {
 /* 阵容确认 */
 .panel-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin: 16px 0; }
 .panel-card { padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; }
-.setup-form { display: flex; gap: 16px; margin: 16px 0; }
+.setup-form { display: grid; grid-template-columns: minmax(420px, 720px) 140px auto; align-items: end; gap: 16px; margin: 22px 0; }
 .setup-form label { display: flex; flex-direction: column; gap: 4px; }
+.setup-form input, .setup-form select { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface); color: var(--color-text); font: inherit; }
+.setup-form input::placeholder { color: var(--color-text-muted); }
+.setup-form .btn { min-height: 48px; padding-inline: 22px; }
 .actions { display: flex; gap: 12px; }
 
 /* 结果页 */
@@ -196,6 +204,7 @@ h1, h2, h3, h4 {
 @media (max-width: 820px) {
   .page { padding: 16px; }
   .setup-form { display: grid; grid-template-columns: 1fr; }
+  .discussion-card-link { padding-right: 72px; }
   .studio { height: auto; min-height: 100vh; }
   .studio-header { align-items: flex-start; }
   .studio-body { grid-template-columns: 1fr; }

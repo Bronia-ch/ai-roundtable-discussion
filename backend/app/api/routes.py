@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.schemas import (
     CommandRequest,
@@ -72,6 +72,26 @@ async def list_sessions(request: Request):
             for r in rows
         ]
     }
+
+
+@router.delete("/sessions/{id}", status_code=204)
+async def delete_session(id: str, request: Request):
+    """删除会话前先确定性停止可能存在的讨论/报告任务，再原子清理数据。"""
+    conn = request.app.state.conn
+    row = await (await conn.execute("SELECT 1 FROM sessions WHERE id=?", (id,))).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    registry = request.app.state.engine_registry
+    engine = registry.get_engine(id)
+    if engine is not None:
+        await engine.stop()
+    await registry.stop(id)
+    await registry.remove(id)
+
+    if not await transactions.delete_session(conn, id):
+        raise HTTPException(status_code=404, detail="session not found")
+    return Response(status_code=204)
 
 
 async def _apply_command(request: Request, session_id: str, command_type: str, command_id: str) -> CommandOutcome:

@@ -2,7 +2,7 @@
 
 > 面向真实业务场景的多智能体圆桌讨论：从主题输入到阵容生成、实时发言、观点聚合和最终报告，一条链路完成。
 
-**演示状态：已完成真实 DeepSeek 最小演示** · **测试：223 pytest / 8 Playwright / 84 Vitest 全部通过**
+**演示状态：已完成真实 DeepSeek 最小演示** · **测试：225 pytest / 9 Playwright / 86 Vitest 全部通过**
 
 项目仓库：<https://github.com/Bronia-ch/ai-roundtable-discussion>
 
@@ -118,6 +118,7 @@ cd frontend; npm run e2e
 | POST | `/sessions/{id}/retry` | 安全重试（报告等） |
 | GET | `/sessions/{id}` | 快照（status/last_sequence/transcript/insights） |
 | GET | `/sessions/{id}/events` | SSE 事件流（`after_seq` / `Last-Event-ID` 续订） |
+| DELETE | `/sessions/{id}` | 停止后台任务并原子删除会话及从属数据 |
 | GET | `/healthz` | 健康检查 |
 
 命令均为 `POST {"command_id": "..."}`，经 `command_receipts` 幂等（重复 ID 返回 202 不重复副作用）。

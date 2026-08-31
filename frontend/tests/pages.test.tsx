@@ -112,6 +112,22 @@ describe("Home", () => {
     expect(screen.getByTestId("card-link").getAttribute("href")).toBe("#/panel?id=s1");
   });
 
+  it("二次确认后删除会话并立即从列表移除", async () => {
+    const load = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ sessions: [SESSION] }),
+    }));
+    const remove = vi.fn(async () => ({ ok: true, status: 204 }));
+    render(<Home deps={{ load, remove }} />);
+    expect(await screen.findByText("AI")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("delete-s1"));
+    expect(screen.getByText("确定删除？")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("confirm-delete-s1"));
+    await waitFor(() => expect(screen.queryByText("AI")).not.toBeInTheDocument());
+    expect(remove).toHaveBeenCalledWith("/sessions/s1", { method: "DELETE" });
+  });
+
   it("列表失败：显示「会话列表加载失败」，不被加载中遮蔽", async () => {
     const load = vi.fn(async () => ({ ok: false, status: 500 }));
     render(<Home deps={{ load }} />);

@@ -244,6 +244,27 @@ async def test_get_sessions_stable_ordering_by_created_at(conn):
 # ---------------------------------------------------------------- 命令端点
 
 @pytest.mark.asyncio
+async def test_delete_session_removes_session_and_related_events(conn):
+    registry = await _mount(conn)
+    async with await _client() as c:
+        created = await c.post("/sessions", json={"topic": "待删除", "expert_count": 3})
+        sid = created.json()["session_id"]
+        response = await c.delete(f"/sessions/{sid}")
+    assert response.status_code == 204
+    assert await (await conn.execute("SELECT 1 FROM sessions WHERE id=?", (sid,))).fetchone() is None
+    assert (await (await conn.execute("SELECT COUNT(*) FROM events WHERE session_id=?", (sid,))).fetchone())[0] == 0
+    assert registry.get_engine(sid) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_session_unknown_returns_404(conn):
+    await _mount(conn)
+    async with await _client() as c:
+        response = await c.delete("/sessions/nope")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path,valid_state", VALID_STATES)
 async def test_command_202_in_valid_state(conn, path, valid_state):
     registry = await _mount(conn)  # start/end 会真启动引擎 task，须在同 loop 内收尾

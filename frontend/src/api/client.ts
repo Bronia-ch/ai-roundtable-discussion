@@ -33,6 +33,10 @@ export interface JsonPoster {
   ): Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 }
 
+export interface SessionDeleter {
+  (url: string, init: { method: "DELETE" }): Promise<{ ok: boolean; status: number }>;
+}
+
 /** 新建会话：POST /sessions {topic, expert_count} → 201 会话条目（后端生成 id/时间）。 */
 export async function createSession(
   topic: string,
@@ -54,6 +58,15 @@ export async function listSessions(load: SnapshotLoader = fetch): Promise<Sessio
   if (!res.ok) throw new Error(`list sessions failed: ${res.status}`);
   const body = (await res.json()) as { sessions: SessionItem[] };
   return body.sessions;
+}
+
+/** 删除会话及其发言、洞察和报告。 */
+export async function deleteSession(
+  sessionId: string,
+  remove: SessionDeleter = fetch,
+): Promise<void> {
+  const res = await remove(`/sessions/${sessionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`delete session failed: ${res.status}`);
 }
 
 export interface CommandPoster {

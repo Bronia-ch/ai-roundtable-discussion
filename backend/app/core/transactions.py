@@ -74,6 +74,41 @@ def write_lock(conn: aiosqlite.Connection) -> asyncio.Lock:
     return lock
 
 
+async def delete_session(conn: aiosqlite.Connection, session_id: str) -> bool:
+    """原子删除会话及所有从属数据。
+
+    旧版 schema 的外键未声明 ON DELETE CASCADE，因此按依赖的反向顺序
+    显式清理，并与 sessions 主行共享一个写事务。
+    """
+    lock = write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            exists = await (
+                await conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,))
+            ).fetchone()
+            if exists is None:
+                await conn.rollback()
+                return False
+            for table in (
+                "insight_evidence",
+                "discussion_reports",
+                "command_receipts",
+                "events",
+                "utterances",
+                "insights",
+                "turns",
+                "participants",
+            ):
+                await conn.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
+            await conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            await conn.commit()
+            return True
+        except Exception:
+            await conn.rollback()
+            raise
+
+
 async def commit_event(
     conn: aiosqlite.Connection,
     session_id: str,

@@ -10,6 +10,7 @@ ENDPOINTS = [
     ("POST", "/sessions/{id}/retry"),
     ("GET", "/sessions/{id}"),
     ("GET", "/sessions/{id}/events"),
+    ("DELETE", "/sessions/{id}"),
 ]
 
 

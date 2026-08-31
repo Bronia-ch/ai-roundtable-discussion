@@ -58,3 +58,21 @@ test("browser reaches the real backend via same-origin /sessions", async ({ page
   expect(snap.transcript).toEqual([]);
   expect(snap.insights).toEqual([]);
 });
+
+test("首页可二次确认删除讨论及其后端数据", async ({ page }) => {
+  const topic = `待删除讨论-${Date.now()}`;
+  const create = await page.request.post("/sessions", {
+    data: { topic, expert_count: 3 },
+  });
+  expect(create.status()).toBe(201);
+  const { session_id: sessionId } = await create.json();
+
+  await page.goto("/");
+  await expect(page.getByText(topic)).toBeVisible();
+  await page.getByRole("button", { name: `删除讨论：${topic}` }).click();
+  await expect(page.getByText("确定删除？")).toBeVisible();
+  await page.getByTestId(`confirm-delete-${sessionId}`).click();
+
+  await expect(page.getByText(topic)).toHaveCount(0);
+  expect((await page.request.get(`/sessions/${sessionId}`)).status()).toBe(404);
+});
