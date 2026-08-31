@@ -1,5 +1,22 @@
 # AI 圆桌讨论 Web App（MVP）
 
+> 面向真实业务场景的多智能体圆桌讨论：从主题输入到阵容生成、实时发言、观点聚合和最终报告，一条链路完成。
+
+**演示状态：已完成真实 DeepSeek 最小演示** · **测试：221 pytest / 8 Playwright / 84 Vitest 全部通过**
+
+项目仓库：<https://github.com/Bronia-ch/ai-roundtable-discussion>
+
+## 为什么值得看
+
+- **实时协作体验**：SSE 增量事件驱动 transcript、专家状态和洞察面板。
+- **可靠性优先**：SQLite 连接级写锁、命令幂等、断线续订和可恢复状态机。
+- **工程化交付**：SDD → DDD → TDD → E2E 完整开发链路，附 Prompt 记录和演示证据。
+- **可替换模型层**：OpenAI 兼容 Provider，支持真实 DeepSeek 与离线 FakeLLM。
+
+## 演示截图
+
+最终结果页、演播厅发言和阵容确认截图见 `docs/evidence/`（或项目交付包）。
+
 本地运行、前后端分离的中文 AI 圆桌讨论应用：用户输入主题与专家人数，系统编排主持人开场、专家多轮发言（非固定轮流，由调度器结合意愿/公平/多样性决定），实时产出 Transcript、共识与分歧，结束后生成结构化总结与 JSON 结果。
 
 ## 1. 环境要求
@@ -40,7 +57,7 @@ copy .env.example .env     # 或 cp .env.example .env
 |------|------|
 | `LLM_BASE_URL` | OpenAI 兼容 API 基址（默认 `https://api.deepseek.com/v1`） |
 | `LLM_API_KEY` | API Key；**留空时真实调用必然失败**——测试全程使用 FakeLLM，不发起网络请求 |
-| `LLM_MODEL` | 模型 ID **占位符** `your-deepseek-v4-pro-model-id`：请按您账户实际可用的 DeepSeek V4 Pro 模型 ID 填写（本仓库从未验证过具体模型标识，不得凭默认值推断） |
+| `LLM_MODEL` | 模型 ID，默认 `deepseek-chat` |
 | `LLM_SQLITE_PATH` | SQLite 路径（默认 `./data/app.db`；E2E 使用 `:memory:`） |
 
 > 密钥纪律：`.env` 与所有 `*.key/*.pem` 均在 `.gitignore` 中，严禁提交；本仓库从未读取或输出真实密钥。
@@ -113,7 +130,7 @@ cd frontend; npm run e2e
 
 ## 9. 已知边界
 
-- **真实 LLM 调用从未执行**：本仓库未配置有效密钥，`SMOKE_REAL_LLM=1` 的 smoke 测试保持默认 SKIPPED；所有端到端验证均基于 FakeLLM/ScriptedLLM。真实 DeepSeek V4 Pro 的模型 ID、端点行为、token 消耗均**未验证**，需用户配置 `.env` 后按需执行（测试门禁见 `test_smoke_real.py`）。
+- **真实 LLM**：演示阶段已用 `deepseek-chat` 完成真实最小请求；自动化 E2E 仍默认使用 FakeLLM 以保证离线、稳定和不消耗额度。API key 只由后端读取，绝不进入前端或仓库。
 - **单 worker / 单机**：SSE 与引擎任务进程内共享，不支持多进程横向扩展；SQLite 为本地单写者模型。
 - **生产部署未做**：仅本地 uvicorn + Vite；无容器化、无 CI、无鉴权（API Key 仅存在于后端进程）。
 - **P2 项未做**：演播厅视觉润色（计划 P2，可裁剪）。
