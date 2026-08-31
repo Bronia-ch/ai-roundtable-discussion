@@ -29,6 +29,14 @@ from app.core.transactions import CommandOutcome
 from app.llm.fake import ScriptedLLMProvider
 
 
+async def _next_domain_frame(q, timeout: float = 5.0):
+    """报告契约断言跳过独立的席位状态事件。"""
+    while True:
+        frame = await asyncio.wait_for(q.get(), timeout=timeout)
+        if frame["event"] != "participant.state_changed":
+            return frame
+
+
 SUCCESS_SCRIPT = {
     "host": {"text": "欢迎来到圆桌讨论"},
     "intent": {"items": [{"participant_id": "e1", "intent_type": "answer", "willingness": 0.9}]},
@@ -138,7 +146,7 @@ async def test_end_reaches_completed_with_single_report(conn):
     await transactions.execute_command(conn, "s1", "discussion/end", "c2", event_store=store)
     engine = DiscussionEngine("s1", ScriptedLLMProvider(SUCCESS_SCRIPT), conn, event_store=store)
     await engine.end()
-    frames = [await asyncio.wait_for(q.get(), timeout=2.0) for _ in range(3)]
+    frames = [await _next_domain_frame(q, timeout=2.0) for _ in range(3)]
     assert [f["event"] for f in frames] == [
         "session.state_changed", "session.state_changed", "session.state_changed",
     ]
@@ -171,7 +179,7 @@ async def test_finalize_llm_failure_stays_finalizing_with_retry_triple(conn):
     )
     assert err == "report_generation_failed"
     assert retry_op == "report", "必须记录可恢复错误三元组供安全重试"
-    frame = await asyncio.wait_for(q.get(), timeout=2.0)
+    frame = await _next_domain_frame(q, timeout=2.0)
     assert frame["event"] == "error.recoverable"
     assert frame["sequence"] == 1, "失败事件必须精确 seq 广播"
     assert frame["data"]["error_code"] == "report_generation_failed"
@@ -292,7 +300,7 @@ async def test_report_command_applied_on_finalizing_self_migration(conn):
         "SELECT last_event_sequence FROM sessions WHERE id='s1'"
     )).fetchone())[0]
     assert seq == 1, "滞留命令仍递增 seq（receipt + 事件）"
-    frame = await asyncio.wait_for(q.get(), timeout=2.0)
+    frame = await _next_domain_frame(q, timeout=2.0)
     assert frame["event"] == "session.state_changed" and frame["data"]["state"] == "finalizing"
     receipt = await (
         await conn.execute(
@@ -339,12 +347,12 @@ async def test_end_route_launches_finalize_task_to_completed(conn):
         assert r.status_code == 202
         task = registry.get_task("s1")
         assert task is not None, "路由必须把引擎任务登记到 engine_registry"
-        f1 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f1 = await _next_domain_frame(q, timeout=5.0)
         assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
         await provider.wait_entered()          # 引擎已进入 host 调用（卡 gate）
         gate.set()
         gate.clear()
-        f2 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f2 = await _next_domain_frame(q, timeout=5.0)
         assert f2["event"] == "utterance.completed", "host 开场必须广播"
         await provider.wait_entered()          # 已进入 round1 intent（卡 gate）
 
@@ -352,7 +360,7 @@ async def test_end_route_launches_finalize_task_to_completed(conn):
             r = await c.post("/sessions/s1/discussion/end", json={"command_id": "c2"})
         assert r.status_code == 202
         assert await _status(conn) == "finalizing"
-        f3 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f3 = await _next_domain_frame(q, timeout=5.0)
         assert f3["event"] == "session.state_changed" and f3["data"]["state"] == "finalizing"
         await asyncio.wait_for(task, timeout=5.0)
         assert task.done(), "end 后引擎任务必须被确定性收尾"
@@ -363,9 +371,9 @@ async def test_end_route_launches_finalize_task_to_completed(conn):
         await provider.wait_entered()          # finalize 已进入 report 调用（卡 gate）
         gate.set()
         gate.clear()
-        f4 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f4 = await _next_domain_frame(q, timeout=5.0)
         assert f4["event"] == "session.state_changed" and f4["data"]["state"] == "completed"
-        assert f4["sequence"] == 4, "completed 帧必须精确 seq 连续"
+        assert f4["sequence"] > f3["sequence"], "completed 帧必须晚于 finalizing 帧"
         await asyncio.wait_for(finalize_task, timeout=5.0)
         assert finalize_task.done()
         assert await _status(conn) == "completed"
@@ -399,12 +407,12 @@ async def test_retry_route_regenerates_report_after_failure(conn):
         assert r.status_code == 202
         task = registry.get_task("s1")
         assert task is not None
-        f1 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f1 = await _next_domain_frame(q, timeout=5.0)
         assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
         await provider.wait_entered()
         gate.set()
         gate.clear()
-        f2 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f2 = await _next_domain_frame(q, timeout=5.0)
         assert f2["event"] == "utterance.completed"
         await provider.wait_entered()          # 已进入 round1 intent（卡 gate）
 
@@ -412,7 +420,7 @@ async def test_retry_route_regenerates_report_after_failure(conn):
         async with await _client() as c:
             r = await c.post("/sessions/s1/discussion/end", json={"command_id": "c2"})
         assert r.status_code == 202
-        f3 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f3 = await _next_domain_frame(q, timeout=5.0)
         assert f3["event"] == "session.state_changed" and f3["data"]["state"] == "finalizing"
         await asyncio.wait_for(task, timeout=5.0)
         assert task.done()
@@ -421,7 +429,7 @@ async def test_retry_route_regenerates_report_after_failure(conn):
         await provider.wait_entered()          # finalize 进入 report 调用（卡 gate）
         gate.set()
         gate.clear()
-        f4 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f4 = await _next_domain_frame(q, timeout=5.0)
         assert f4["event"] == "error.recoverable"
         assert f4["data"]["error_code"] == "report_generation_failed"
         assert f4["data"]["retry_operation"] == "report"
@@ -440,12 +448,12 @@ async def test_retry_route_regenerates_report_after_failure(conn):
         async with await _client() as c:
             r = await c.post("/sessions/s1/retry", json={"command_id": "c3"})
         assert r.status_code == 202
-        f5 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f5 = await _next_domain_frame(q, timeout=5.0)
         assert f5["event"] == "session.state_changed" and f5["data"]["state"] == "finalizing"
         await provider.wait_entered()          # 新 finalize 进入 report 调用（卡 gate）
         gate.set()
         gate.clear()
-        f6 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f6 = await _next_domain_frame(q, timeout=5.0)
         assert f6["event"] == "session.state_changed" and f6["data"]["state"] == "completed"
         await asyncio.wait_for(registry.get_task("s1"), timeout=5.0)
         assert await _status(conn) == "completed"
@@ -482,19 +490,19 @@ async def test_retry_idempotent_same_command_id(conn):
         assert r.status_code == 202
         task = registry.get_task("s1")
         assert task is not None
-        f1 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f1 = await _next_domain_frame(q, timeout=5.0)
         assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
         await provider.wait_entered()
         gate.set()
         gate.clear()
-        f2 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f2 = await _next_domain_frame(q, timeout=5.0)
         assert f2["event"] == "utterance.completed"
         await provider.wait_entered()          # 已进入 round1 intent（卡 gate）
 
         async with await _client() as c:
             r = await c.post("/sessions/s1/discussion/end", json={"command_id": "c2"})
         assert r.status_code == 202
-        f3 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f3 = await _next_domain_frame(q, timeout=5.0)
         assert f3["event"] == "session.state_changed" and f3["data"]["state"] == "finalizing"
         await asyncio.wait_for(task, timeout=5.0)
         assert task.done()
@@ -502,7 +510,7 @@ async def test_retry_idempotent_same_command_id(conn):
         await provider.wait_entered()
         gate.set()
         gate.clear()
-        f4 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f4 = await _next_domain_frame(q, timeout=5.0)
         assert f4["event"] == "error.recoverable"   # 首次 finalize 失败滞留
         await asyncio.wait_for(registry.get_task("s1"), timeout=5.0)
 
@@ -510,18 +518,18 @@ async def test_retry_idempotent_same_command_id(conn):
         async with await _client() as c:
             r = await c.post("/sessions/s1/retry", json={"command_id": "c3"})
         assert r.status_code == 202
-        f5 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f5 = await _next_domain_frame(q, timeout=5.0)
         assert f5["event"] == "session.state_changed" and f5["data"]["state"] == "finalizing"
         await provider.wait_entered()
         gate.set()
         gate.clear()
-        f6 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f6 = await _next_domain_frame(q, timeout=5.0)
         assert f6["event"] == "error.recoverable"   # 重试分派再次失败
         await asyncio.wait_for(registry.get_task("s1"), timeout=5.0)
         seq_before = (await (await conn.execute(
             "SELECT last_event_sequence FROM sessions WHERE id='s1'"
         )).fetchone())[0]
-        assert seq_before == 6
+        assert seq_before == f6["sequence"], "DB 最新序号必须与最后一条广播一致"
 
         # —— 重复 retry 同 command_id：DUPLICATE 202，纯 no-op ——
         async with await _client() as c:
@@ -529,7 +537,7 @@ async def test_retry_idempotent_same_command_id(conn):
         assert r.status_code == 202, "重复 retry command_id 必须仍返回 202（幂等）"
         assert await _status(conn) == "finalizing", "DUPLICATE 不得改变状态"
         with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(q.get(), timeout=0.5)   # 缺席断言：无新广播
+            await _next_domain_frame(q, timeout=0.5)   # 缺席断言：无新广播
         seq_after = (await (await conn.execute(
             "SELECT last_event_sequence FROM sessions WHERE id='s1'"
         )).fetchone())[0]

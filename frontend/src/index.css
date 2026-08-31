@@ -120,6 +120,7 @@ h1, h2, h3, h4 {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 12px;
+  transition: border-color .2s ease, background-color .2s ease, box-shadow .2s ease;
 }
 .avatar {
   width: 44px;
@@ -140,6 +141,10 @@ h1, h2, h3, h4 {
 [data-state="speaking"] .state-dot { background: var(--pr-green-500); }
 [data-state="preparing"] .state-dot { background: var(--pr-amber-500); }
 [data-state="idle"] .state-dot { background: var(--pr-blue-500); }
+.participant-seat[data-state="speaking"] { border-color: rgba(16,185,129,.7); background: rgba(16,185,129,.07); box-shadow: 0 0 0 3px rgba(16,185,129,.08); }
+.participant-seat[data-state="preparing"] { border-color: rgba(245,158,11,.55); background: rgba(245,158,11,.05); }
+.participant-seat[data-state="speaking"] .state-dot { animation: state-pulse 1.2s ease-in-out infinite; }
+@keyframes state-pulse { 50% { box-shadow: 0 0 0 6px rgba(16,185,129,0); } 0%, 100% { box-shadow: 0 0 0 2px rgba(16,185,129,.22); } }
 
 /* 演播厅主体：独立滚动区域 */
 .studio { display: flex; flex-direction: column; height: 100vh; }

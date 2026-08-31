@@ -18,6 +18,7 @@
 
 import asyncio
 import inspect
+import json
 
 import pytest
 
@@ -143,6 +144,38 @@ async def test_engine_loop_after_command_writes_no_state(conn):
     assert host_speech == 0, f"契约：speech_count 仅用于调度公平，不累计 host（当前：{host_speech}）"
 
 
+@pytest.mark.asyncio
+async def test_engine_persists_and_emits_participant_runtime_states(conn):
+    """主持人和专家在生成/发言阶段必须产生可重放的席位状态事件，
+    引擎结束后回到各自的休息状态。"""
+    await _setup(conn)
+    await transactions.execute_command(conn, "s1", "discussion/start", "c1")
+    engine = DiscussionEngine("s1", ScriptedLLMProvider(SCRIPT), conn, max_turns=1)
+    await engine.start()
+
+    rows = await (
+        await conn.execute(
+            "SELECT payload FROM events WHERE session_id='s1' "
+            "AND event_type='participant.state_changed' ORDER BY sequence"
+        )
+    ).fetchall()
+    changes = [json.loads(row[0]) for row in rows]
+    assert {c["state"] for c in changes} >= {"preparing", "speaking", "idle", "waiting"}
+    assert any(c == {"participant_id": "h1", "state": "speaking"} for c in changes)
+    assert any(c["participant_id"] in {"e1", "e2"} and c["state"] == "speaking" for c in changes)
+
+    final = dict(
+        await (
+            await conn.execute(
+                "SELECT id, runtime_state FROM participants WHERE session_id='s1'"
+            )
+        ).fetchall()
+    )
+    assert final["h1"] == "idle"
+    assert final["e1"] == "waiting"
+    assert final["e2"] == "waiting"
+
+
 # ---------------------------------------------------------------- G6：发言者由确定性调度决定
 
 @pytest.mark.asyncio
@@ -258,12 +291,19 @@ async def test_engine_pause_resume_stop_deterministic(conn):
             await provider.wait_entered()
             release()
 
+    async def next_utterance_frame() -> dict:
+        """席位状态事件与发言共用 SSE 队列，跳过状态帧取下一条发言。"""
+        while True:
+            frame = await asyncio.wait_for(q.get(), timeout=2.0)
+            if frame["event"] == "utterance.completed":
+                return frame
+
     # —— pause：在 host 调用在途（wait_entered 确认、尚未放行）时设置——
     #    先于下一轮 _pause.wait() 检查点，pause 必然生效于 round1 开始之前
     await provider.wait_entered()        # host generate 已进入、卡在 gate
     await engine.pause()
     release()                            # 放行 host
-    host_frame = await asyncio.wait_for(q.get(), timeout=2.0)
+    host_frame = await next_utterance_frame()
     assert host_frame["event"] == "utterance.completed"
     assert await _count(conn) == 1, "pause 后仅 host 落库"
 
@@ -276,7 +316,7 @@ async def test_engine_pause_resume_stop_deterministic(conn):
     await engine.resume()
     await provider.wait_entered()        # 确认 round1 intent 已进入（卡 gate）
     await finish_round(first_call_in_flight=True)      # 放行在途 intent + utterance + insight
-    e1 = await asyncio.wait_for(q.get(), timeout=2.0)
+    e1 = await next_utterance_frame()
     assert e1["event"] == "utterance.completed"
     n1 = await _count(conn)
     assert n1 == 2, f"resume 后计数必须增长（host + round1 expert，当前：{n1}）"
@@ -284,7 +324,7 @@ async def test_engine_pause_resume_stop_deterministic(conn):
     # —— round2 正常推进 ——
     await provider.wait_entered()        # 确认 round2 intent 已进入
     await finish_round(first_call_in_flight=True)
-    e2 = await asyncio.wait_for(q.get(), timeout=2.0)
+    e2 = await next_utterance_frame()
     assert e2["event"] == "utterance.completed"
     n2 = await _count(conn)
     assert n2 == 3, f"round2 后计数必须继续增长（当前：{n2}）"
@@ -323,13 +363,24 @@ async def test_engine_broadcasts_exact_seq_after_commit(conn):
     await transactions.execute_command(conn, "s1", "discussion/start", "c1", event_store=store)
     engine = DiscussionEngine("s1", ScriptedLLMProvider(SCRIPT), conn, max_turns=1, event_store=store)
     task = asyncio.create_task(engine.start())
-    frames = [await asyncio.wait_for(q.get(), timeout=2.0) for _ in range(3)]
     await asyncio.wait_for(task, timeout=2.0)
-    assert [f["event"] for f in frames] == [
+    frames = []
+    while not q.empty():
+        frames.append(q.get_nowait())
+    core_frames = [
+        f for f in frames if f["event"] in {"session.state_changed", "utterance.completed"}
+    ]
+    assert [f["event"] for f in core_frames] == [
         "session.state_changed",
         "utterance.completed",
         "utterance.completed",
     ], "命令 state_changed 必须先于引擎 utterance 广播"
-    assert [f["sequence"] for f in frames] == [1, 2, 3], "广播 seq 必须精确连续（不读最新事件）"
-    assert frames[1]["data"]["role"] == "host"
-    assert frames[2]["data"]["role"] == "expert"
+    assert [f["sequence"] for f in frames] == sorted({f["sequence"] for f in frames})
+    persisted = await (
+        await conn.execute(
+            "SELECT sequence, event_type FROM events WHERE session_id='s1' ORDER BY sequence"
+        )
+    ).fetchall()
+    assert [(f["sequence"], f["event"]) for f in frames] == [tuple(row) for row in persisted]
+    assert core_frames[1]["data"]["role"] == "host"
+    assert core_frames[2]["data"]["role"] == "expert"

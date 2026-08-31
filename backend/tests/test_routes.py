@@ -14,6 +14,14 @@ from app.llm.fake import ScriptedLLMProvider
 from app.llm.openai_compat import OpenAICompatProvider
 
 
+async def _next_domain_frame(q, timeout: float = 5.0):
+    """路由时序断言跳过独立的席位状态事件。"""
+    while True:
+        frame = await asyncio.wait_for(q.get(), timeout=timeout)
+        if frame["event"] != "participant.state_changed":
+            return frame
+
+
 ENGINE_SCRIPT = {
     "host": {"text": "欢迎来到圆桌讨论"},
     "intent": {"items": [{"participant_id": "e1", "intent_type": "answer", "willingness": 0.9}]},
@@ -318,10 +326,10 @@ async def test_discussion_start_applied_launches_engine_task(conn):
         task = registry.get_task("s1")
         assert task is not None, "路由必须把引擎任务登记到 engine_registry"
         # 精确顺序：本次命令的 state_changed(live) 必须先于引擎任何 utterance 广播
-        first = await asyncio.wait_for(q.get(), timeout=5.0)
+        first = await _next_domain_frame(q, timeout=5.0)
         assert first["event"] == "session.state_changed", "命令状态事件必须先于引擎 utterance"
         assert first["data"]["state"] == "live"
-        second = await asyncio.wait_for(q.get(), timeout=5.0)
+        second = await _next_domain_frame(q, timeout=5.0)
         assert second["event"] == "utterance.completed", "引擎第一条 utterance 紧随命令广播"
         count = (
             await (await conn.execute("SELECT COUNT(*) FROM utterances WHERE session_id='s1'")).fetchone()
@@ -380,11 +388,11 @@ async def test_pause_resume_end_routes_signal_engine(conn):
         assert r.status_code == 202
         task = registry.get_task("s1")
         assert task is not None, "路由必须把引擎任务登记到 engine_registry"
-        f1 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f1 = await _next_domain_frame(q, timeout=5.0)
         assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
         await provider.wait_entered()          # 引擎已进入 host 调用（卡 gate）
         release()
-        f2 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f2 = await _next_domain_frame(q, timeout=5.0)
         assert f2["event"] == "utterance.completed", "host 开场必须广播"
         await provider.wait_entered()          # 已进入 round1 intent（卡 gate）
 
@@ -393,10 +401,10 @@ async def test_pause_resume_end_routes_signal_engine(conn):
             r = await c.post("/sessions/s1/discussion/pause", json={"command_id": "c2"})
         assert r.status_code == 202
         assert await _status() == "paused"
-        f3 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f3 = await _next_domain_frame(q, timeout=5.0)
         assert f3["event"] == "session.state_changed" and f3["data"]["state"] == "paused"
         await finish_round(first_in_flight=True)   # round1 在途轮收尾（intent 已确认进入）
-        f4 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f4 = await _next_domain_frame(q, timeout=5.0)
         assert f4["event"] == "utterance.completed", "在途轮收尾后 expert 帧必须到达"
         release()                                  # 放行 round2 intent——引擎停在检查点
         with pytest.raises(asyncio.TimeoutError):
@@ -407,14 +415,14 @@ async def test_pause_resume_end_routes_signal_engine(conn):
             r = await c.post("/sessions/s1/discussion/resume", json={"command_id": "c3"})
         assert r.status_code == 202
         assert await _status() == "live"
-        f5 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f5 = await _next_domain_frame(q, timeout=5.0)
         assert f5["event"] == "session.state_changed" and f5["data"]["state"] == "live"
         cap = (await (await conn.execute(
             "SELECT utterance_cap FROM sessions WHERE id='s1'"
         )).fetchone())[0]
         assert cap == 40, "手动软暂停（error_code NULL）resume 不得增加 cap（仅软上限恢复 +10，CG-D）"
         await finish_round(first_in_flight=False)  # round2：等待/放行 3 次
-        f6 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f6 = await _next_domain_frame(q, timeout=5.0)
         assert f6["event"] == "utterance.completed"
         await provider.wait_entered()              # 已进入 round3 intent（卡 gate）
 
@@ -423,7 +431,7 @@ async def test_pause_resume_end_routes_signal_engine(conn):
             r = await c.post("/sessions/s1/discussion/end", json={"command_id": "c4"})
         assert r.status_code == 202
         assert await _status() == "finalizing"
-        f7 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f7 = await _next_domain_frame(q, timeout=5.0)
         assert f7["event"] == "session.state_changed" and f7["data"]["state"] == "finalizing"
         await asyncio.wait_for(task, timeout=5.0)
         assert task.done(), "end 后引擎任务必须被确定性收尾"

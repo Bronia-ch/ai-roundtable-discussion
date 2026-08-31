@@ -159,6 +159,63 @@ async def commit_event(
         return seq
 
 
+async def commit_participant_state(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    participant_id: str,
+    state: str,
+    event_store=None,
+) -> int | None:
+    """原子更新席位运行状态并写入 participant.state_changed 事件。
+
+    相同状态为 no-op，避免重复广播；不存在的参与者返回 None。
+    """
+    if state not in {"waiting", "preparing", "speaking", "idle"}:
+        raise ValueError(f"非法 participant state: {state}")
+    lock = write_lock(conn)
+    async with lock:
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = await (
+                await conn.execute(
+                    "SELECT runtime_state FROM participants WHERE session_id=? AND id=?",
+                    (session_id, participant_id),
+                )
+            ).fetchone()
+            if row is None or row[0] == state:
+                await conn.rollback()
+                return None
+            await conn.execute(
+                "UPDATE participants SET runtime_state=?, updated_at=datetime('now') "
+                "WHERE session_id=? AND id=?",
+                (state, session_id, participant_id),
+            )
+            await conn.execute(
+                "UPDATE sessions SET last_event_sequence=last_event_sequence+1 WHERE id=?",
+                (session_id,),
+            )
+            seq = (
+                await (
+                    await conn.execute(
+                        "SELECT last_event_sequence FROM sessions WHERE id=?", (session_id,)
+                    )
+                ).fetchone()
+            )[0]
+            payload = {"participant_id": participant_id, "state": state}
+            await conn.execute(
+                "INSERT INTO events (session_id, sequence, event_type, schema_version, payload) "
+                "VALUES (?, ?, 'participant.state_changed', 1, ?)",
+                (session_id, seq, json.dumps(payload, ensure_ascii=False)),
+            )
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+    if event_store is not None:
+        await event_store.publish(conn, session_id, seq)
+    return seq
+
+
 async def create_session(
     conn: aiosqlite.Connection,
     session_id: str,
@@ -402,6 +459,7 @@ async def commit_panel(
                 for p in participants:
                     pid = uuid.uuid4().hex
                     role, name, profession, title, stance, avatar_color, avatar_emoji, sort_order = p
+                    runtime_state = "idle" if role == "host" else "waiting"
                     panel.append(
                         {
                             "id": pid,
@@ -413,14 +471,14 @@ async def commit_panel(
                             "stance": stance,
                             "avatar_color": avatar_color,
                             "avatar_emoji": avatar_emoji,
-                            "runtime_state": None,
-                            "public_focus": None,
+                            "runtime_state": runtime_state,
+                            "public_focus": "",
                         }
                     )
                     await conn.execute(
                         "INSERT INTO participants (id, session_id, role, name, profession, title, "
-                        "stance, avatar_color, avatar_emoji, sort_order) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "stance, avatar_color, avatar_emoji, sort_order, runtime_state) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             pid,
                             session_id,
@@ -432,6 +490,7 @@ async def commit_panel(
                             avatar_color,
                             avatar_emoji,
                             sort_order,
+                            runtime_state,
                         ),
                     )
             await conn.execute(

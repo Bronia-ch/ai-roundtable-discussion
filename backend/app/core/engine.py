@@ -207,6 +207,15 @@ class DiscussionEngine:
             return "暂无历史发言"
         return "\n".join(f"{name or '主持人'}：{text}" for name, text in reversed(rows))
 
+    async def _set_runtime_state(self, participant_id: str, state: str) -> None:
+        await transactions.commit_participant_state(
+            self.conn,
+            self.session_id,
+            participant_id,
+            state,
+            event_store=self.event_store,
+        )
+
     async def _fail_to_paused(self, code: str) -> None:
         """失败/上限暂停迁移：paused + 可恢复错误三元组（last_stable_state='live'），
         状态事件精确 seq 广播（commit_event 三写）。"""
@@ -264,6 +273,7 @@ class DiscussionEngine:
         ).fetchall()
         self._experts = {r[0]: r[1] for r in rows}
         host_id = await self._host_id()
+        host_is_speaking = False
         count = await self._utterance_count()
         cap = await self._cap()
         if count >= cap:
@@ -278,6 +288,7 @@ class DiscussionEngine:
             # → SchemaError）→ host_opening_failed 暂停；FATAL → 任务停止、状态保持不动。
             # None（end 收尾：LLM 在途取消）→ 按 _stop 检查点优雅退出。
             try:
+                await self._set_runtime_state(host_id, "preparing")
                 topic = await self._topic()
                 opening = await self._generate(
                     "host",
@@ -286,20 +297,27 @@ class DiscussionEngine:
                     f"讨论主题：{topic}",
                 )
                 if opening is None or self._stop.is_set():
+                    await self._set_runtime_state(host_id, "idle")
                     return  # end 收尾优雅退出（None 仅当 _stop 已发时产生）
                 opening_text = self._text_of(opening, "text")
+                await self._set_runtime_state(host_id, "speaking")
+                host_is_speaking = True
             except (AuthError, SchemaError, TimeoutError, ConnectionError,
                     RateLimitError, UpstreamError):
                 logger.exception("host opening generation failed for session %s", self.session_id)
+                await self._set_runtime_state(host_id, "idle")
                 await self._fail_to_paused("host_opening_failed")
                 return
             except Exception:
                 logger.exception("discussion engine fatal error for session %s", self.session_id)
+                await self._set_runtime_state(host_id, "idle")
                 return  # FATAL：任务停止、状态保持不动（CG-B 契约）
             await self._emit("host", host_id, opening_text, 1)  # turn_id 缺省 → _emit 内创建
             count += 1
             if count >= cap:
                 # 开场落库即达上限（cap=1）：零专家发言，按软/绝对上限规则暂停
+                await self._set_runtime_state(host_id, "idle")
+                host_is_speaking = False
                 await self._fail_to_paused(
                     "absolute_cap_reached" if cap >= 100 else "utterance_cap_reached"
                 )
@@ -324,6 +342,9 @@ class DiscussionEngine:
             except Exception:
                 await self._degrade("rule_scheduler")  # RuleScheduler 降级，本轮照常继续
                 intent = None
+            if host_is_speaking:
+                await self._set_runtime_state(host_id, "idle")
+                host_is_speaking = False
             if self._stop.is_set():
                 break  # 消费 intent 前检查点（end 取消的 None 必伴随 _stop，先于此退出）
             expert_id = self._pick_expert(intent)
@@ -337,6 +358,7 @@ class DiscussionEngine:
                 turn_id = row[0]  # R1 恢复：失败轮占位 turn 复用，不撞 UNIQUE(session_id, sequence)
             else:
                 turn_id = await turns.create_turn(self.conn, self.session_id, ordinal, expert_id)
+            await self._set_runtime_state(expert_id, "preparing")
             try:
                 stance = self._experts.get(expert_id, "独立观点")
                 utterance = await self._generate(
@@ -346,45 +368,54 @@ class DiscussionEngine:
                     f"主题：{await self._topic()}\n你的立场：{stance}\n最近发言：\n{await self._recent_context()}",
                 )
                 if self._stop.is_set():
+                    await self._set_runtime_state(expert_id, "waiting")
                     break  # 消费 utterance 前检查点（_text_of 绝不吃 None）
                 utterance_text = self._text_of(utterance, "text")
             except (AuthError, SchemaError, TimeoutError, ConnectionError,
                     RateLimitError, UpstreamError):
+                await self._set_runtime_state(expert_id, "waiting")
                 await turns.mark_turn_failed(self.conn, turn_id)
                 await self._degrade("utterance")
                 await self._fail_to_paused("utterance_generation_failed")
                 return
             except Exception:
+                await self._set_runtime_state(expert_id, "waiting")
                 return  # FATAL：任务停止、状态保持不动（CG-B 契约）
-            uid = await self._emit("expert", expert_id, utterance_text, ordinal, turn_id=turn_id)
-            count += 1
-            ordinal += 1
-            self._update_history(expert_id)
-            if count >= cap:
-                # 每轮落库后检查上限：cap<100 软上限码、cap>=100 绝对上限码
-                await self._fail_to_paused(
-                    "absolute_cap_reached" if cap >= 100 else "utterance_cap_reached"
-                )
-                return
+            await self._set_runtime_state(expert_id, "speaking")
             try:
-                insight = await self._generate(
-                    "insight",
-                    "提炼最新发言，严格输出 JSON："
-                    "{\"create\":{\"kind\":\"focus|consensus|divergence|open_question\",\"text\":\"洞察\"}}。",
-                    f"主题：{await self._topic()}\n最近发言：\n{await self._recent_context()}",
-                )
-                if self._stop.is_set():
-                    break  # 消费 insight 前检查点（insight.get 绝不吃 None）
-                create = insight.get("create")
-                if not isinstance(create, dict):
-                    raise SchemaError("insight 缺 create 结构")  # 结构非法 → 同一降级路径
-                await insights.create_insight(
-                    self.conn, self.session_id,
-                    create.get("kind", "focus"), create.get("text", ""),
-                )
-            except Exception:
-                await insights.mark_insight_state(self.conn, uid, "permanently_failed")
-                await self._degrade("insight")  # insight 降级，讨论继续
+                uid = await self._emit("expert", expert_id, utterance_text, ordinal, turn_id=turn_id)
+                count += 1
+                ordinal += 1
+                self._update_history(expert_id)
+                if count >= cap:
+                    # 每轮落库后检查上限：cap<100 软上限码、cap>=100 绝对上限码
+                    await self._fail_to_paused(
+                        "absolute_cap_reached" if cap >= 100 else "utterance_cap_reached"
+                    )
+                    return
+                try:
+                    insight = await self._generate(
+                        "insight",
+                        "提炼最新发言，严格输出 JSON："
+                        "{\"create\":{\"kind\":\"focus|consensus|divergence|open_question\",\"text\":\"洞察\"}}。",
+                        f"主题：{await self._topic()}\n最近发言：\n{await self._recent_context()}",
+                    )
+                    if self._stop.is_set():
+                        break  # 消费 insight 前检查点（insight.get 绝不吃 None）
+                    create = insight.get("create")
+                    if not isinstance(create, dict):
+                        raise SchemaError("insight 缺 create 结构")  # 结构非法 → 同一降级路径
+                    await insights.create_insight(
+                        self.conn, self.session_id,
+                        create.get("kind", "focus"), create.get("text", ""),
+                    )
+                except Exception:
+                    await insights.mark_insight_state(self.conn, uid, "permanently_failed")
+                    await self._degrade("insight")  # insight 降级，讨论继续
+            finally:
+                await self._set_runtime_state(expert_id, "waiting")
+        if host_is_speaking:
+            await self._set_runtime_state(host_id, "idle")
 
     async def _generate(self, call_type: str, system: str, user: str) -> dict | None:
         """LLM 调用经 call_with_retry：仅 RECOVERABLE 指数退避重试（AUTH/SCHEMA/FATAL

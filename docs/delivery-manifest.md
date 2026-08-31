@@ -9,4 +9,4 @@
 
 ## 验证结果
 
-Backend pytest：225 passed，1 skipped；Playwright：9 passed（3 workers）；Vitest：86 passed；TypeScript/Vite build：成功。
+Backend pytest：226 passed，1 skipped；Playwright：9 passed（3 workers）；Vitest：86 passed；TypeScript/Vite build：成功。

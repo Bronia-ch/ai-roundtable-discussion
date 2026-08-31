@@ -5,5 +5,5 @@ AI圆桌讨论APP 最终交付校验报告
 交互优化: 首页引导、会话状态、实时发言计数与自动滚动、操作反馈、移动端布局
 启动脚本: start_demo.bat
 模型配置: deepseek-chat (API key 未记录)
-验证结果: Backend 225 passed / 1 skipped; Frontend 86 passed; Vite build succeeded; Playwright 9 passed
+验证结果: Backend 226 passed / 1 skipped; Frontend 86 passed; Vite build succeeded; Playwright 9 passed
 

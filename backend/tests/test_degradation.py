@@ -44,6 +44,14 @@ from app.core.transactions import CommandOutcome
 from app.llm.fake import ScriptedLLMProvider
 
 
+async def _next_domain_frame(q, timeout: float = 5.0):
+    """旧契约断言只关注会话/发言/降级帧；席位状态帧由专项测试锁定。"""
+    while True:
+        frame = await asyncio.wait_for(q.get(), timeout=timeout)
+        if frame["event"] != "participant.state_changed":
+            return frame
+
+
 SCRIPT = {
     "host": {"text": "欢迎来到圆桌讨论"},
     "intent": {"items": [{"participant_id": "e1", "intent_type": "answer", "willingness": 0.9}]},
@@ -191,11 +199,11 @@ async def test_host_recoverable_exhausted_pauses_with_triple(conn):
     )).fetchone())[0]
     assert lss == "live", "paused 迁移必须记录可恢复错误三元组（last_stable_state=live）"
     assert await _count(conn) == 0, "开场失败零 utterance"
-    f1 = await asyncio.wait_for(q.get(), timeout=2.0)
-    f2 = await asyncio.wait_for(q.get(), timeout=2.0)
+    f1 = await _next_domain_frame(q, timeout=2.0)
+    f2 = await _next_domain_frame(q, timeout=2.0)
     assert [f["event"] for f in (f1, f2)] == ["session.state_changed", "session.state_changed"]
     assert f2["data"]["state"] == "paused"
-    assert f2["sequence"] == 2, "paused 帧必须精确 seq 连续（命令 seq1 之后）"
+    assert f2["sequence"] > f1["sequence"], "paused 帧必须晚于 live 帧（中间可含席位状态）"
 
 
 @pytest.mark.asyncio
@@ -246,13 +254,13 @@ async def test_utterance_failure_pauses_with_failed_turn_and_degrade(conn):
     )).fetchone())
     assert ft == 1, "failed_turn_count 必须落库（降级记账）"
     assert json.loads(comps) == ["utterance"], "degraded_components 必须记录 utterance"
-    frames = [await asyncio.wait_for(q.get(), timeout=2.0) for _ in range(4)]
+    frames = [await _next_domain_frame(q, timeout=2.0) for _ in range(4)]
     assert [f["event"] for f in frames] == [
         "session.state_changed", "utterance.completed", "session.degraded", "session.state_changed",
     ]
     assert frames[2]["data"]["component"] == "utterance" and frames[2]["data"]["count"] == 1
-    assert frames[3]["data"]["state"] == "paused" and frames[3]["sequence"] == 4
-    assert [f["sequence"] for f in frames] == [1, 2, 3, 4], "记账/迁移广播 seq 必须精确连续"
+    assert frames[3]["data"]["state"] == "paused"
+    assert [f["sequence"] for f in frames] == sorted(f["sequence"] for f in frames), "记账/迁移帧序号必须严格递增"
 
 
 # ================================================================ D4/D5/D6：intent/insight 降级继续
@@ -279,7 +287,7 @@ async def test_intent_failure_degrades_to_scheduler_and_continues(conn):
     )).fetchone())
     assert used == 2, "每轮 intent 失败必须记账一次"
     assert json.loads(comps) == ["rule_scheduler"], "degraded_components 必须记录（去重）"
-    frames = [await asyncio.wait_for(q.get(), timeout=2.0) for _ in range(5)]
+    frames = [await _next_domain_frame(q, timeout=2.0) for _ in range(5)]
     degraded = [f for f in frames if f["event"] == "session.degraded"]
     assert len(degraded) == 2, "每轮降级必须广播 session.degraded"
     assert [d["data"]["count"] for d in degraded] == [1, 2], "降级计数必须递增记账"
@@ -422,12 +430,13 @@ async def test_soft_cap_pauses_with_utterance_cap_reached(conn):
     assert await _count(conn) == 2, "上限必须精确停在 cap 条（host + 1 expert）"
     assert await _status(conn) == "paused"
     assert await _err(conn) == "utterance_cap_reached", "cap<100 必须用软上限码"
-    frames = [await asyncio.wait_for(q.get(), timeout=2.0) for _ in range(4)]
+    frames = [await _next_domain_frame(q, timeout=2.0) for _ in range(4)]
     assert [f["event"] for f in frames] == [
         "session.state_changed", "utterance.completed", "utterance.completed",
         "session.state_changed",
     ]
-    assert frames[3]["data"]["state"] == "paused" and frames[3]["sequence"] == 4
+    assert frames[3]["data"]["state"] == "paused"
+    assert frames[3]["sequence"] > frames[2]["sequence"]
 
 
 @pytest.mark.asyncio
@@ -468,8 +477,8 @@ async def test_start_at_cap_pauses_with_zero_new_utterances(conn):
     assert await _count(conn) == 100, "启动即停必须零新增发言"
     assert await _status(conn) == "paused"
     assert await _err(conn) == "absolute_cap_reached"
-    f1 = await asyncio.wait_for(q.get(), timeout=2.0)
-    f2 = await asyncio.wait_for(q.get(), timeout=2.0)
+    f1 = await _next_domain_frame(q, timeout=2.0)
+    f2 = await _next_domain_frame(q, timeout=2.0)
     assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
     assert f2["event"] == "session.state_changed" and f2["data"]["state"] == "paused"
     assert f2["sequence"] == 2, "paused 帧紧随命令帧（无任何 utterance 广播）"
@@ -494,10 +503,10 @@ async def test_recovery_mode_skips_opening_and_continues_ordinal(conn):
         "SELECT ordinal, role FROM utterances WHERE session_id='s1' ORDER BY ordinal DESC LIMIT 1"
     )).fetchone()
     assert last[0] == 4 and last[1] == "expert", "下一条必须 ordinal=4 且为 expert（无开场）"
-    f1 = await asyncio.wait_for(q.get(), timeout=2.0)
-    f2 = await asyncio.wait_for(q.get(), timeout=2.0)
+    f1 = await _next_domain_frame(q, timeout=2.0)
+    f2 = await _next_domain_frame(q, timeout=2.0)
     assert [f["event"] for f in (f1, f2)] == ["session.state_changed", "utterance.completed"]
-    assert f2["sequence"] == 2, "恢复模式首帧即专家发言（无开场帧）"
+    assert f2["sequence"] > f1["sequence"], "恢复模式无开场发言，但允许专家席位状态帧"
 
 
 # ================================================================ R1：失败暂停 → resume 重建
@@ -527,21 +536,21 @@ async def test_resume_after_failure_rebuilds_engine_without_cap_increase(conn):
         assert r.status_code == 202
         task = registry.get_task("s1")
         assert task is not None
-        f1 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f1 = await _next_domain_frame(q, timeout=5.0)
         assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
         await provider.wait_entered()          # host
         gate.set(); gate.clear()
-        f2 = await asyncio.wait_for(q.get(), timeout=5.0)
-        assert f2["event"] == "utterance.completed" and f2["sequence"] == 2
+        f2 = await _next_domain_frame(q, timeout=5.0)
+        assert f2["event"] == "utterance.completed" and f2["sequence"] > f1["sequence"]
         await provider.wait_entered()          # round1 intent
         gate.set(); gate.clear()
         await provider.wait_entered()          # round1 utterance（即将失败）
         gate.set(); gate.clear()
-        f3 = await asyncio.wait_for(q.get(), timeout=5.0)
-        f4 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f3 = await _next_domain_frame(q, timeout=5.0)
+        f4 = await _next_domain_frame(q, timeout=5.0)
         assert f3["event"] == "session.degraded" and f3["data"]["component"] == "utterance"
         assert f4["event"] == "session.state_changed" and f4["data"]["state"] == "paused"
-        assert f4["sequence"] == 4
+        assert f4["sequence"] > f3["sequence"]
         assert await _status(conn) == "paused"
         assert await _err(conn) == "utterance_generation_failed"
         await asyncio.wait_for(task, timeout=5.0)
@@ -551,9 +560,9 @@ async def test_resume_after_failure_rebuilds_engine_without_cap_increase(conn):
         async with await _client() as c:
             r = await c.post("/sessions/s1/discussion/resume", json={"command_id": "c2"})
         assert r.status_code == 202
-        f5 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f5 = await _next_domain_frame(q, timeout=5.0)
         assert f5["event"] == "session.state_changed" and f5["data"]["state"] == "live"
-        assert f5["sequence"] == 5
+        assert f5["sequence"] > f4["sequence"]
         new_task = registry.get_task("s1")
         assert new_task is not None and new_task is not task, \
             "task 已 done → 必须重建新任务（任务存活判别，身份变化）"
@@ -569,8 +578,8 @@ async def test_resume_after_failure_rebuilds_engine_without_cap_increase(conn):
         gate.set(); gate.clear()
         await provider.wait_entered()          # utterance（fail_once 已消费 → 成功）
         gate.set(); gate.clear()
-        f6 = await asyncio.wait_for(q.get(), timeout=5.0)
-        assert f6["event"] == "utterance.completed" and f6["sequence"] == 6
+        f6 = await _next_domain_frame(q, timeout=5.0)
+        assert f6["event"] == "utterance.completed" and f6["sequence"] > f5["sequence"]
         last = await (await conn.execute(
             "SELECT ordinal, role FROM utterances WHERE session_id='s1' ORDER BY ordinal DESC LIMIT 1"
         )).fetchone()
@@ -615,7 +624,7 @@ async def test_resume_soft_cap_increases_cap_by_10_and_rebuilds(conn):
         async with await _client() as c:
             r = await c.post("/sessions/s1/discussion/resume", json={"command_id": "c1"})
         assert r.status_code == 202
-        f1 = await asyncio.wait_for(q.get(), timeout=5.0)
+        f1 = await _next_domain_frame(q, timeout=5.0)
         assert f1["event"] == "session.state_changed" and f1["data"]["state"] == "live"
         assert f1["sequence"] == 1, "resume 命令事务 seq 精确（seed 无事件）"
         await provider.wait_entered()          # 重建引擎 round1 intent（count=39 无 host）
@@ -628,8 +637,8 @@ async def test_resume_soft_cap_increases_cap_by_10_and_rebuilds(conn):
         gate.set(); gate.clear()
         await provider.wait_entered()          # utterance
         gate.set(); gate.clear()
-        f2 = await asyncio.wait_for(q.get(), timeout=5.0)
-        assert f2["event"] == "utterance.completed" and f2["sequence"] == 2
+        f2 = await _next_domain_frame(q, timeout=5.0)
+        assert f2["event"] == "utterance.completed" and f2["sequence"] > f1["sequence"]
         last = await (await conn.execute(
             "SELECT ordinal FROM utterances WHERE session_id='s1' ORDER BY ordinal DESC LIMIT 1"
         )).fetchone()
@@ -725,7 +734,7 @@ async def test_resume_absolute_cap_conflict_no_mutation_no_launch(conn):
             r = await c.post("/sessions/s1/discussion/end", json={"command_id": "c2"})
         assert r.status_code == 202
         assert await _status(conn) == "finalizing", "绝对上限会话仅 end 可离开（→ finalizing）"
-        f = await asyncio.wait_for(q.get(), timeout=5.0)
+        f = await _next_domain_frame(q, timeout=5.0)
         assert f["event"] == "session.state_changed" and f["data"]["state"] == "finalizing"
         assert f["sequence"] == 1, "end 命令事务 seq 精确（拒绝零消耗）"
         finalize_task = registry.get_task("s1")
