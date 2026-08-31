@@ -57,7 +57,11 @@ export function Home({ deps }: { deps?: HomeDeps }) {
   return (
     <div className="page home">
       <header className="home-header">
-        <h1>AI 圆桌讨论</h1>
+        <div className="hero-copy">
+          <span className="eyebrow">MULTI-AGENT DISCUSSION STUDIO</span>
+          <h1>把一个复杂问题，交给一桌不同立场的专家</h1>
+          <p>输入议题，AI 将组织主持人和专家阵容，实时沉淀共识、分歧与可执行结论。</p>
+        </div>
         <form
           className="setup-form"
           onSubmit={(e) => {
@@ -103,11 +107,11 @@ export function Home({ deps }: { deps?: HomeDeps }) {
           {loadError}
         </p>
       ) : sessions === null ? (
-        <p className="empty">加载中…</p>
+        <p className="empty loading-pulse">正在加载讨论记录…</p>
       ) : sessions.length === 0 ? (
-        <p className="empty">暂无讨论，创建第一个吧</p>
+        <div className="empty-state"><strong>暂无讨论，创建第一个吧</strong><span>从上方输入一个值得深入分析的问题开始。</span></div>
       ) : (
-        <div className="discussion-list">
+        <section><div className="section-heading"><h2>最近讨论</h2><span>{sessions.length} 个会话</span></div><div className="discussion-list">
           {sessions.map((s) => (
             <DiscussionCard
               key={s.session_id}
@@ -117,7 +121,7 @@ export function Home({ deps }: { deps?: HomeDeps }) {
               expertCount={s.expert_count}
             />
           ))}
-        </div>
+        </div></section>
       )}
     </div>
   );

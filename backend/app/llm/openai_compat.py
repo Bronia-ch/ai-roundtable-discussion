@@ -63,6 +63,10 @@ class OpenAICompatProvider:
         try:
             return json.loads(content)
         except json.JSONDecodeError:
+            # 主持人与专家发言允许兼容端点返回自然语言。保留真实模型内容，
+            # 而不是替换成固定兜底句，避免多轮讨论机械重复。
+            if call_type in {"host", "utterance"}:
+                return {"text": content}
             fallbacks = {
                 "host": {"text": "欢迎来到今天的圆桌讨论。"},
                 "utterance": {"text": "我认为这个问题需要兼顾效率与公平。"},

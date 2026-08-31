@@ -69,6 +69,7 @@ export function Studio({ sessionId, deps }: { sessionId: string; deps?: StudioDe
 
   // 单一错误展示：后端错误码优先，其次本地命令错误
   const errorText = state.errorCode ?? commandError;
+  const statusLabel = ({ ready: "等待开始", live: "讨论进行中", paused: "已暂停" } as Record<string, string>)[state.status] ?? "同步中";
 
   // 发言席 speaker_id → 姓名（Transcript 展示用）
   const speakerNames: Record<string, string> = {};
@@ -76,6 +77,10 @@ export function Studio({ sessionId, deps }: { sessionId: string; deps?: StudioDe
 
   return (
     <div className="page studio">
+      <header className="studio-header">
+        <div><span className="eyebrow">LIVE STUDIO</span><h1>圆桌演播厅</h1></div>
+        <span className={`session-status status-${state.status}`}><i />{statusLabel}</span>
+      </header>
       {errorText && (
         <p className="error" data-testid="studio-error">
           {errorText}
@@ -100,6 +105,7 @@ export function Studio({ sessionId, deps }: { sessionId: string; deps?: StudioDe
         <InsightPanel focus={state.topic ?? ""} insights={state.insights} />
       </div>
       <div className="controls">
+        <span className="control-hint">{pending ? "正在执行操作…" : statusLabel}</span>
         <button
           className="btn btn-primary"
           onClick={() => void handleStart()}

@@ -128,6 +128,7 @@ export function Result({ sessionId, deps }: { sessionId: string; deps?: ResultDe
         <p className="empty" data-testid="result-unavailable">报告暂不可用</p>
       ) : (
         <>
+          <div className="result-hero"><span className="eyebrow">DISCUSSION COMPLETE</span><p>一场多视角讨论已整理为结构化结论。</p></div>
           <section className="result-section">
             <h2>摘要</h2>
             <p>{report.summary}</p>
@@ -152,6 +153,7 @@ export function Result({ sessionId, deps }: { sessionId: string; deps?: ResultDe
             <h2>原始 JSON</h2>
             <pre className="json">{state.summary}</pre>
           </section>
+          <a className="btn result-home-link" href="#/">返回首页</a>
         </>
       )}
     </div>

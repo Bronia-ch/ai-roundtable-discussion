@@ -188,6 +188,25 @@ class DiscussionEngine:
         ).fetchone()
         return row[0]
 
+    async def _topic(self) -> str:
+        row = await (
+            await self.conn.execute("SELECT topic FROM sessions WHERE id=?", (self.session_id,))
+        ).fetchone()
+        return row[0] if row else "当前议题"
+
+    async def _recent_context(self, limit: int = 6) -> str:
+        rows = await (
+            await self.conn.execute(
+                "SELECT p.name, u.text FROM utterances u "
+                "LEFT JOIN participants p ON p.id=u.speaker_id "
+                "WHERE u.session_id=? ORDER BY u.ordinal DESC LIMIT ?",
+                (self.session_id, limit),
+            )
+        ).fetchall()
+        if not rows:
+            return "暂无历史发言"
+        return "\n".join(f"{name or '主持人'}：{text}" for name, text in reversed(rows))
+
     async def _fail_to_paused(self, code: str) -> None:
         """失败/上限暂停迁移：paused + 可恢复错误三元组（last_stable_state='live'），
         状态事件精确 seq 广播（commit_event 三写）。"""
@@ -259,7 +278,13 @@ class DiscussionEngine:
             # → SchemaError）→ host_opening_failed 暂停；FATAL → 任务停止、状态保持不动。
             # None（end 收尾：LLM 在途取消）→ 按 _stop 检查点优雅退出。
             try:
-                opening = await self._generate("host", "system", "开场白")
+                topic = await self._topic()
+                opening = await self._generate(
+                    "host",
+                    "你是专业圆桌主持人。用中文输出 JSON：{\"text\":\"开场白\"}。"
+                    "开场需点明议题、提出两个讨论方向，控制在120字以内。",
+                    f"讨论主题：{topic}",
+                )
                 if opening is None or self._stop.is_set():
                     return  # end 收尾优雅退出（None 仅当 _stop 已发时产生）
                 opening_text = self._text_of(opening, "text")
@@ -291,7 +316,11 @@ class DiscussionEngine:
                     return  # end 收尾：暂停检查点被取消（stop 已发）——正常结束
                 raise  # 非 end 取消（_stop 未设置）：保留取消语义，不吞异常
             try:
-                intent = await self._generate("intent", "system", "批量意图")
+                intent = await self._generate(
+                    "intent",
+                    "分析专家发言意愿，严格输出 JSON：{\"items\":[]}。",
+                    f"主题：{await self._topic()}\n最近发言：\n{await self._recent_context()}",
+                )
             except Exception:
                 await self._degrade("rule_scheduler")  # RuleScheduler 降级，本轮照常继续
                 intent = None
@@ -309,7 +338,13 @@ class DiscussionEngine:
             else:
                 turn_id = await turns.create_turn(self.conn, self.session_id, ordinal, expert_id)
             try:
-                utterance = await self._generate("utterance", "system", "专家发言")
+                stance = self._experts.get(expert_id, "独立观点")
+                utterance = await self._generate(
+                    "utterance",
+                    "你是圆桌专家。输出 JSON：{\"text\":\"发言\"}。"
+                    "发言应回应上下文、体现自身立场、提供一个具体论据或建议，避免重复，控制在180字以内。",
+                    f"主题：{await self._topic()}\n你的立场：{stance}\n最近发言：\n{await self._recent_context()}",
+                )
                 if self._stop.is_set():
                     break  # 消费 utterance 前检查点（_text_of 绝不吃 None）
                 utterance_text = self._text_of(utterance, "text")
@@ -332,7 +367,12 @@ class DiscussionEngine:
                 )
                 return
             try:
-                insight = await self._generate("insight", "system", "洞察归类")
+                insight = await self._generate(
+                    "insight",
+                    "提炼最新发言，严格输出 JSON："
+                    "{\"create\":{\"kind\":\"focus|consensus|divergence|open_question\",\"text\":\"洞察\"}}。",
+                    f"主题：{await self._topic()}\n最近发言：\n{await self._recent_context()}",
+                )
                 if self._stop.is_set():
                     break  # 消费 insight 前检查点（insight.get 绝不吃 None）
                 create = insight.get("create")

@@ -74,3 +74,9 @@ test-results/
 playwright-report/
 blob-report/
 .playwright/
+
+# --- Local delivery artifacts ---
+AI-roundtable-delivery.zip
+AI-roundtable-delivery.zip.sha256
+AI-roundtable-evidence.zip
+AI-roundtable-evidence/

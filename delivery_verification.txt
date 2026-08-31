@@ -1,7 +1,9 @@
 AI圆桌讨论APP 最终交付校验报告
 日期: 2026-08-31
 演示证据: 首页→阵容确认→演播厅发言→讨论结果页
-关键修复: 连接级写锁、DeepSeek 非 JSON/空响应降级、引擎异常日志
+关键修复: 连接级写锁、DeepSeek 自然语言/Markdown JSON 兼容、上下文感知发言、引擎异常日志
+交互优化: 首页引导、会话状态、实时发言计数与自动滚动、操作反馈、移动端布局
 启动脚本: start_demo.bat
 模型配置: deepseek-chat (API key 未记录)
+验证结果: Backend 223 passed / 1 skipped; Frontend 84 passed; Vite build succeeded; Playwright 8 passed
 

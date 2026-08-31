@@ -2,7 +2,7 @@
 
 > 面向真实业务场景的多智能体圆桌讨论：从主题输入到阵容生成、实时发言、观点聚合和最终报告，一条链路完成。
 
-**演示状态：已完成真实 DeepSeek 最小演示** · **测试：221 pytest / 8 Playwright / 84 Vitest 全部通过**
+**演示状态：已完成真实 DeepSeek 最小演示** · **测试：223 pytest / 8 Playwright / 84 Vitest 全部通过**
 
 项目仓库：<https://github.com/Bronia-ch/ai-roundtable-discussion>
 
@@ -12,6 +12,8 @@
 - **可靠性优先**：SQLite 连接级写锁、命令幂等、断线续订和可恢复状态机。
 - **工程化交付**：SDD → DDD → TDD → E2E 完整开发链路，附 Prompt 记录和演示证据。
 - **可替换模型层**：OpenAI 兼容 Provider，支持真实 DeepSeek 与离线 FakeLLM。
+- **上下文感知发言**：主持人和专家获取议题、立场与最近发言，降低机械重复，提升讨论连贯性。
+- **可用性优化**：会话状态、发言计数、自动跟随、操作反馈和移动端布局完整覆盖。
 
 ## 演示截图
 
@@ -133,7 +135,7 @@ cd frontend; npm run e2e
 - **真实 LLM**：演示阶段已用 `deepseek-chat` 完成真实最小请求；自动化 E2E 仍默认使用 FakeLLM 以保证离线、稳定和不消耗额度。API key 只由后端读取，绝不进入前端或仓库。
 - **单 worker / 单机**：SSE 与引擎任务进程内共享，不支持多进程横向扩展；SQLite 为本地单写者模型。
 - **生产部署未做**：仅本地 uvicorn + Vite；无容器化、无 CI、无鉴权（API Key 仅存在于后端进程）。
-- **P2 项未做**：演播厅视觉润色（计划 P2，可裁剪）。
+- **真实模型输出差异**：已兼容 Markdown JSON 代码块与主持/发言的自然语言返回；报告、阵容等结构化调用仍要求合法 JSON。
 - **浏览器支持**：E2E 仅验证 Edge/Chromium 通道。
 
 ## 10. 文档索引

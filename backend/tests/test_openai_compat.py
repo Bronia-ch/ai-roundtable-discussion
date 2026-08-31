@@ -25,6 +25,26 @@ async def test_generate_returns_parsed_json():
 
 
 @pytest.mark.asyncio
+async def test_natural_language_utterance_preserves_real_model_text():
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "这是一个有证据支撑的真实观点。"}}]})
+
+    p = _provider(handler)
+    assert await p.generate("utterance", "sys", "user") == {
+        "text": "这是一个有证据支撑的真实观点。"
+    }
+
+
+@pytest.mark.asyncio
+async def test_markdown_fenced_json_is_parsed():
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "```json\n{\"text\":\"你好\"}\n```"}}]})
+
+    p = _provider(handler)
+    assert await p.generate("host", "sys", "user") == {"text": "你好"}
+
+
+@pytest.mark.asyncio
 async def test_401_raises_auth_error():
     def handler(request):
         return httpx.Response(401, json={"error": "unauthorized"})
